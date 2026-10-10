@@ -64,3 +64,4 @@ apps/server       18 passed
 2. `TurnResponse` 增加了 `suggestedActions` 字段：入场建议行动来自世界数据，回合后建议行动来自 LLM 申报，前端需要随快照更新。
 3. `WorldCard` 增加了 `entryActions`；`GET /api/meta` 增加了 `openMemoryTaskCount`（前端「记忆待重试」提示需要）。
 4. 解锁判定为**直接前置**判定而非传递闭包（修复：通关便利店不应提前解锁风雪山庄）。
+5. `GET /api/runs/active` 无活跃局时返回 `200 { run: null }` 而非 404——首启/死亡后查询活跃局是常态请求，404 会在浏览器控制台产生错误噪音（联调反馈修复）。

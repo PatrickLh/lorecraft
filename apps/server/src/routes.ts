@@ -24,11 +24,8 @@ export function createApp(service: GameService): Hono {
   app.post('/api/runs', (c) => c.json(service.createRun(), 201))
 
   app.get('/api/runs/active', (c) => {
-    const run = service.getActiveRun()
-    if (!run) {
-      return c.json({ error: { code: 'no_active_run', message: '没有进行中的局' } }, 404)
-    }
-    return c.json({ run })
+    // 没有进行中的局是常态（首次启动/死亡后），返回 200 + null 而非 404
+    return c.json({ run: service.getActiveRun() })
   })
 
   app.get('/api/runs/:id', (c) => c.json({ run: service.getRun(c.req.param('id')) }))

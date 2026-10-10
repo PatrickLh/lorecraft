@@ -106,6 +106,11 @@ const BIANLIDIAN_WIN = [
 describe('P2：run 生命周期 + 门禁', () => {
   it('创建新局；已有活跃局时 409（错误格式统一）', async () => {
     const s = setup()
+    // 无活跃局是常态：200 + null（不产生 404 报错噪音）
+    const none = await s.app.request('/api/runs/active')
+    expect(none.status).toBe(200)
+    expect(((await none.json()) as { run: RunState | null }).run).toBeNull()
+
     const { run } = s.service.createRun()
     expect(run.phase).toBe('hub')
     expect(run.lifespan).toBe(60)

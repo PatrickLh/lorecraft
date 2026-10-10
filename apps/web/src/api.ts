@@ -44,13 +44,8 @@ export const api = {
     return r.run
   },
   getActiveRun: async (): Promise<RunState | null> => {
-    try {
-      const r = await req<{ run: RunState }>('/api/runs/active')
-      return r.run
-    } catch (e) {
-      if (e instanceof ApiError && e.code === 'no_active_run') return null
-      throw e
-    }
+    const r = await req<{ run: RunState | null }>('/api/runs/active')
+    return r.run
   },
   getRun: async (id: string): Promise<RunState> => {
     const r = await req<{ run: RunState }>(`/api/runs/${id}`)
