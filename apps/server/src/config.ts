@@ -1,4 +1,40 @@
 /** 服务配置：全部来自环境变量（模型名、超时、路径均可配置，plan §3）。 */
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+
+/**
+ * 从 cwd 向上查找 .env 并加载到 process.env（已存在的变量优先，不覆盖）。
+ * 只在服务端入口调用一次；测试通过显式传入 env 对象，不走此路径。
+ */
+export function loadDotEnv(): string | null {
+  let dir = process.cwd()
+  for (;;) {
+    const candidate = resolve(dir, '.env')
+    if (existsSync(candidate)) {
+      for (const rawLine of readFileSync(candidate, 'utf8').split('\n')) {
+        const line = rawLine.trim()
+        if (!line || line.startsWith('#')) continue
+        const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
+        if (!m) continue
+        const key = m[1] as string
+        let value = (m[2] ?? '').trim()
+        if (value.startsWith('"') || value.startsWith("'")) {
+          const q = value[0] as string
+          const end = value.indexOf(q, 1)
+          value = end > 0 ? value.slice(1, end) : value.slice(1)
+        } else {
+          const hash = value.indexOf(' #')
+          if (hash >= 0) value = value.slice(0, hash).trim()
+        }
+        if (!(key in process.env)) process.env[key] = value
+      }
+      return candidate
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
 
 export interface AppConfig {
   port: number

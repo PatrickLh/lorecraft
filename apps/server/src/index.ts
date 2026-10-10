@@ -1,11 +1,14 @@
 /** 服务入口：仅绑定本地地址（plan §3）。 */
 import { serve } from '@hono/node-server'
 import { openDb } from './db.js'
-import { loadConfig } from './config.js'
+import { loadConfig, loadDotEnv } from './config.js'
 import { GameService } from './game.js'
 import { createProvider } from './provider-factory.js'
 import { Repos } from './repos.js'
 import { createApp } from './routes.js'
+
+const envFile = loadDotEnv()
+if (envFile) console.log(`[lorecraft] loaded env from ${envFile}`)
 
 const config = loadConfig()
 const db = openDb(config.sqlitePath)
