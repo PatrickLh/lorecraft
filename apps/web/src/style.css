@@ -1,0 +1,146 @@
+:root {
+  --bg: #0d0f14;
+  --bg-soft: #141822;
+  --bg-card: #1a1f2e;
+  --border: #2a3145;
+  --text: #d8dce6;
+  --text-dim: #8a92a6;
+  --accent: #d4a24e;
+  --accent-soft: rgba(212, 162, 78, 0.15);
+  --danger: #c0504f;
+  --ok: #5f9c6a;
+  --mono: 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+  --serif: 'Songti SC', 'Noto Serif SC', 'STSong', serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--serif);
+  line-height: 1.75;
+}
+
+#app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 80px;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+button {
+  font-family: inherit;
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #14120c;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #e0b364;
+}
+
+input[type='text'] {
+  font-family: inherit;
+  font-size: 15px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 10px 14px;
+  width: 100%;
+  outline: none;
+}
+
+input[type='text']:focus {
+  border-color: var(--accent);
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+
+.dim {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 12px;
+  padding: 1px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--text-dim);
+  margin-right: 6px;
+}
+
+.tag.warn {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.banner {
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 10px;
+  padding: 12px 18px;
+  margin-bottom: 16px;
+  color: var(--accent);
+}
+
+.notice {
+  border-left: 3px solid var(--accent);
+  background: var(--bg-card);
+  padding: 8px 14px;
+  margin: 8px 0;
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.notice.bad {
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+
+.error-text {
+  color: var(--danger);
+  font-size: 13px;
+}
