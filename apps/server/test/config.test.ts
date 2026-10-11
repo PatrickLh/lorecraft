@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -34,7 +34,8 @@ describe('loadDotEnv', () => {
 
     process.chdir(sub)
     const loaded = loadDotEnv()
-    expect(loaded).toBe(join(tmp, '.env'))
+    // macOS 上 /var 是 /private/var 的符号链接，cwd 会解析为物理路径
+    expect(loaded).toBe(join(realpathSync(tmp), '.env'))
     expect(process.env.LLM_PROVIDER).toBe('deepseek')
     expect(process.env.PORT).toBe('9999')
     expect(process.env.QUOTED).toBe('abc # not comment')

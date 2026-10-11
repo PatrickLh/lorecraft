@@ -33,6 +33,8 @@ pnpm dev:web                # http://localhost:5173（/api 代理到 8787）
 
 浏览器打开 http://localhost:5173 。存档为 SQLite，默认 `./data/lorecraft.db`（可用 `SQLITE_PATH` 改）。
 
+> 服务端启动时自动从 **cwd 向上查找 `.env`** 并加载（仓库根目录放一份即可），已存在的环境变量优先、不被覆盖。启动日志会打印 `[lorecraft] loaded env from …`。
+
 > 注意：Vite 默认只监听 `localhost`（IPv6），请用 `http://localhost:5173` 而非 `127.0.0.1` 访问。
 
 ### 常用命令
