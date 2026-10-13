@@ -1,5 +1,14 @@
-/** API 客户端 + SSE 解析（plan P4：断流后查询服务端结果，避免重复提交）。 */
-import type { MetaInfo, MetaState, RunState, TurnResponse, WorldCard } from './types.js'
+/** v2.0 API 客户端 + SSE 解析（断流后以服务端快照为准恢复）。 */
+import type {
+  ActResponse,
+  BattleResponse,
+  BattleState,
+  EndingOption,
+  EventPresentation,
+  LifeState,
+  MetaInfo,
+  WorldCatalog,
+} from './types.js'
 
 export class ApiError extends Error {
   constructor(
@@ -15,77 +24,62 @@ export class ApiError extends Error {
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
-    res = await fetch(path, {
-      headers: { 'content-type': 'application/json' },
-      ...init,
-    })
+    res = await fetch(path, { headers: { 'content-type': 'application/json' }, ...init })
   } catch (e) {
     throw new ApiError('network', `无法连接服务器：${String(e)}`, 0)
   }
   const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null
   if (!res.ok) {
-    throw new ApiError(
-      body?.error?.code ?? `http_${res.status}`,
-      body?.error?.message ?? res.statusText,
-      res.status
-    )
+    throw new ApiError(body?.error?.code ?? `http_${res.status}`, body?.error?.message ?? res.statusText, res.status)
   }
   return body as T
 }
 
 export const api = {
   getMeta: (): Promise<MetaInfo> => req<MetaInfo>('/api/meta'),
-  getWorlds: async (): Promise<WorldCard[]> => {
-    const r = await req<{ worlds: WorldCard[] }>('/api/worlds')
-    return r.worlds
+  getCatalog: (): Promise<WorldCatalog> => req<WorldCatalog>('/api/catalog'),
+  getHistory: (): Promise<MetaInfo['meta']['history']> =>
+    req<{ history: MetaInfo['meta']['history'] }>('/api/lives').then((r) => r.history),
+  createLife: async (originId: string): Promise<LifeState> => {
+    const r = await req<{ life: LifeState }>('/api/lives', { method: 'POST', body: JSON.stringify({ originId }) })
+    return r.life
   },
-  createRun: async (): Promise<RunState> => {
-    const r = await req<{ run: RunState }>('/api/runs', { method: 'POST' })
-    return r.run
+  getActiveLife: async (): Promise<{
+    life: LifeState | null
+    event: EventPresentation | null
+    availableEndings: EndingOption[]
+  }> => {
+    return req('/api/lives/active')
   },
-  getActiveRun: async (): Promise<RunState | null> => {
-    const r = await req<{ run: RunState | null }>('/api/runs/active')
-    return r.run
+  getLife: async (id: string): Promise<{
+    life: LifeState
+    event: EventPresentation | null
+    availableEndings: EndingOption[]
+  }> => {
+    return req(`/api/lives/${id}`)
   },
-  getRun: async (id: string): Promise<RunState> => {
-    const r = await req<{ run: RunState }>(`/api/runs/${id}`)
-    return r.run
-  },
-  enterWorld: async (id: string, worldId: string): Promise<RunState> => {
-    const r = await req<{ run: RunState }>(`/api/runs/${id}/enter-world`, {
-      method: 'POST',
-      body: JSON.stringify({ worldId }),
-    })
-    return r.run
-  },
-  settle: async (id: string): Promise<{ run: RunState; meta: MetaState }> => {
-    return req(`/api/runs/${id}/settle`, { method: 'POST' })
-  },
-  retryMemory: async (id: string): Promise<{ processed: number; failed: number; meta: MetaState }> => {
-    return req(`/api/runs/${id}/memory/retry`, { method: 'POST' })
-  },
+  summarizeCharacters: (id: string, version: number): Promise<{ life: LifeState }> =>
+    req(`/api/lives/${id}/characters/summarize`, { method: 'POST', body: JSON.stringify({ requestId: crypto.randomUUID(), clientVersion: version }) }),
+  retryMemory: (id: string): Promise<{ processed: number; failed: number }> =>
+    req(`/api/lives/${id}/memory/retry`, { method: 'POST' }),
+  settle: (id: string): Promise<{ life: LifeState }> =>
+    req(`/api/lives/${id}/settle`, { method: 'POST' }),
 }
 
-export interface StreamTurnArgs {
-  runId: string
-  requestId: string
-  clientVersion: number
-  input: string
+export interface StreamArgs<T> {
+  path: string
+  body: Record<string, unknown>
   onDelta: (text: string) => void
 }
 
-/** POST + SSE：delta（暂存叙事增量）→ result（最终结果）或 error。返回最终结果。 */
-export async function streamTurn(args: StreamTurnArgs): Promise<TurnResponse> {
+/** POST + SSE：delta / result / error */
+export async function streamCall<T>(args: StreamArgs<T>): Promise<T> {
   let res: Response
   try {
-    res = await fetch(`/api/runs/${args.runId}/turn`, {
+    res = await fetch(args.path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: args.requestId,
-        clientVersion: args.clientVersion,
-        input: args.input,
-      }),
+      body: JSON.stringify(args.body),
     })
   } catch (e) {
     throw new ApiError('network', `无法连接服务器：${String(e)}`, 0)
@@ -94,12 +88,10 @@ export async function streamTurn(args: StreamTurnArgs): Promise<TurnResponse> {
     const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null
     throw new ApiError(body?.error?.code ?? `http_${res.status}`, body?.error?.message ?? res.statusText, res.status)
   }
-
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  let result: TurnResponse | null = null
-
+  let result: T | null = null
   for (;;) {
     const chunk = await reader.read()
     if (chunk.done) break
@@ -116,17 +108,23 @@ export async function streamTurn(args: StreamTurnArgs): Promise<TurnResponse> {
       }
       if (dataLines.length === 0) continue
       const data = JSON.parse(dataLines.join('\n')) as unknown
-      if (event === 'delta') {
-        args.onDelta((data as { text: string }).text)
-      } else if (event === 'result') {
-        result = data as TurnResponse
-      } else if (event === 'error') {
+      if (event === 'delta') args.onDelta((data as { text: string }).text)
+      else if (event === 'result') result = data as T
+      else if (event === 'error') {
         const err = data as { code: string; message: string }
         throw new ApiError(err.code, err.message, 400)
       }
     }
   }
-
   if (!result) throw new ApiError('stream_truncated', '连接中断且未收到最终结果', 0)
   return result
 }
+
+export function actPath(lifeId: string): string {
+  return `/api/lives/${lifeId}/act`
+}
+export function battlePath(lifeId: string): string {
+  return `/api/lives/${lifeId}/battle/turn`
+}
+
+export type { ActResponse, BattleResponse, BattleState }

@@ -1,6 +1,6 @@
 /**
  * 辅助 LLM 调用（plan P3）：记忆提炼、超限合并、滚动摘要。
- * 单次尝试、不重试；失败由调用方兜底（记忆失败不阻塞结算，摘要失败保留旧摘要）。
+ * 单次尝试、不重试；失败由调用方兜底（记忆失败不阻塞轮回结算，摘要失败保留旧摘要）。
  */
 import { z } from 'zod'
 import type { LlmProvider, TokenUsage } from './provider.js'
@@ -26,7 +26,13 @@ export type AuxResult<T> =
 
 async function callStructured<T>(
   provider: LlmProvider,
-  args: { system: string; turns: { role: 'user' | 'assistant'; content: string }[]; jsonSchema: unknown; toolName: string; timeoutMs: number },
+  args: {
+    system: string
+    turns: { role: 'user' | 'assistant'; content: string }[]
+    jsonSchema: unknown
+    toolName: string
+    timeoutMs: number
+  },
   parse: (raw: string) => T
 ): Promise<AuxResult<T>> {
   const controller = new AbortController()
@@ -109,12 +115,12 @@ export async function mergeMemoriesLlm(
   )
 }
 
-/** 滚动摘要：旧摘要 + 新回合 → 新摘要 */
+/** 滚动摘要：旧摘要 + 新条目 → 新摘要 */
 export async function summarizeHistory(
   provider: LlmProvider,
   args: {
     existingSummary: string | null
-    turns: { turn: number; playerInput: string; narrative: string }[]
+    entries: { label: string; text: string }[]
     timeoutMs: number
   }
 ): Promise<AuxResult<string>> {

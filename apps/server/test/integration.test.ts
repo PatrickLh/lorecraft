@@ -1,17 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { Hono } from 'hono'
-import {
-  DEGRADED_NARRATIVE,
-  INPUT_MAX_CHARS,
-  type MetaState,
-  type RunState,
-} from '@lorecraft/core'
-import { buildTurnPrompt, MockProvider } from '@lorecraft/llm'
-import { getWorld } from '@lorecraft/worlddata'
+import type { LifeState, Rng } from '@lorecraft/core'
+import { MockProvider } from '@lorecraft/llm'
 import { loadConfig } from '../src/config.js'
-import type { TurnResponse } from '../src/game.js'
 import { openDb } from '../src/db.js'
-import { GameService } from '../src/game.js'
+import { GameService, type ActResponse, type BattleResponse } from '../src/game.js'
 import { HttpError } from '../src/errors.js'
 import { Repos } from '../src/repos.js'
 import { createApp } from '../src/routes.js'
@@ -26,24 +19,24 @@ interface Setup {
   app: Hono
 }
 
-function setup(): Setup {
+function setup(rng?: Rng): Setup {
   const db = openDb(':memory:')
   const repos = new Repos(db)
   const mock = new MockProvider()
   const config = { ...loadConfig({}), sqlitePath: ':memory:' }
-  const service = new GameService({ db, config, provider: mock, repos })
+  const service = new GameService({ db, config, provider: mock, repos, rng })
   const app = createApp(service)
   return { db, repos, mock, service, app }
 }
 
-function httpErrorOf(fn: () => unknown): HttpError {
+function expectHttpError(fn: () => unknown): HttpError {
   try {
     fn()
   } catch (e) {
     if (e instanceof HttpError) return e
     throw e
   }
-  throw new Error('expected HttpError, none thrown')
+  throw new Error('expected HttpError')
 }
 
 async function postJson(app: Hono, path: string, body: unknown): Promise<Response> {
@@ -54,480 +47,422 @@ async function postJson(app: Hono, path: string, body: unknown): Promise<Respons
   })
 }
 
-/** 解析 SSE 文本中的 result 事件 */
-function parseSseResult(text: string): { result?: TurnResponse; hasDelta: boolean; error?: unknown } {
-  const lines = text.split('\n')
-  let hasDelta = false
-  let result: TurnResponse | undefined
-  let error: unknown
-  let currentEvent = ''
-  for (const line of lines) {
-    if (line.startsWith('event: ')) currentEvent = line.slice(7).trim()
-    else if (line.startsWith('data: ')) {
-      const data = line.slice(6)
-      if (currentEvent === 'delta') hasDelta = true
-      else if (currentEvent === 'result') result = JSON.parse(data) as TurnResponse
-      else if (currentEvent === 'error') error = JSON.parse(data)
-    }
+/** 队列化 rng：按序弹出，弹完回落到 0.5 */
+function queuedRng(values: number[]): Rng {
+  let i = 0
+  return () => {
+    const v = values[i]
+    i += 1
+    return v ?? 0.5
   }
-  return { result, hasDelta, error }
 }
 
-/** 依序提交 flag 命令（依赖顺序即数组顺序） */
-async function runFlags(
+async function act(
   s: Setup,
-  runId: string,
-  run: RunState,
-  commands: string[]
-): Promise<{ run: RunState; last: TurnResponse }> {
-  let cur = run
-  let last!: TurnResponse
-  for (const cmd of commands) {
-    const res = await s.service.submitTurn(runId, crypto.randomUUID(), cur.version, cmd)
-    if (res.degraded) throw new Error(`mock 回合意外降级：${res.degradedReason}`)
-    cur = res.run
-    last = res
-  }
-  return { run: cur, last }
+  lifeId: string,
+  version: number,
+  actBody: Record<string, unknown>,
+  requestId: string = crypto.randomUUID()
+): Promise<ActResponse> {
+  return s.service.submitAct(lifeId, requestId, version, actBody as never)
 }
 
-const BIANLIDIAN_WIN = [
-  '/flag read_ruleboard',
-  '/flag no_shadow_customer',
-  '/flag find_torch',
-  '/flag hear_knock',
-  '/flag knock_correct',
-  '/flag coworker_note',
-  '/flag manager_visit',
-  '/flag manager_pacified',
-  '/flag mirror_check',
-]
+async function battleTurn(
+  s: Setup,
+  lifeId: string,
+  version: number,
+  command: Record<string, unknown>,
+  requestId: string = crypto.randomUUID()
+): Promise<BattleResponse> {
+  return s.service.submitBattleTurn(lifeId, requestId, version, command as never)
+}
 
-describe('P2：run 生命周期 + 门禁', () => {
-  it('创建新局；已有活跃局时 409（错误格式统一）', async () => {
+describe('P2：一世生命周期与门禁', () => {
+  it('选出身开局；重复开局 409；锁定出身 403', () => {
     const s = setup()
-    // 无活跃局是常态：200 + null（不产生 404 报错噪音）
-    const none = await s.app.request('/api/runs/active')
+    const { life } = s.service.createLife('nongjia_zi')
+    expect(life.phase).toBe('alive')
+    expect(life.day).toBe(0)
+    expect(life.destinyId).not.toBeNull() // 随机身世线
+
+    expect(expectHttpError(() => s.service.createLife('shijing_youer')).code).toBe('active_life_exists')
+    expect(expectHttpError(() => s.service.createLife('nope')).code).toBe('origin_not_found')
+
+    const s2 = setup()
+    expect(expectHttpError(() => s2.service.createLife('menpai_dizi')).code).toBe('origin_locked')
+  })
+
+  it('HTTP：活跃局恢复返回 200 + null（无局时）；meta 与 catalog 可用', async () => {
+    const s = setup()
+    const none = await s.app.request('/api/lives/active')
     expect(none.status).toBe(200)
-    expect(((await none.json()) as { run: RunState | null }).run).toBeNull()
+    expect(((await none.json()) as { life: LifeState | null }).life).toBeNull()
 
-    const { run } = s.service.createRun()
-    expect(run.phase).toBe('hub')
-    expect(run.lifespan).toBe(60)
-
-    const err = httpErrorOf(() => s.service.createRun())
-    expect(err.code).toBe('active_run_exists')
-
-    const res = await postJson(s.app, '/api/runs', {})
-    expect(res.status).toBe(409)
-    const body = (await res.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('active_run_exists')
+    s.service.createLife('nongjia_zi')
+    const meta = await (await s.app.request('/api/meta')).json()
+    expect((meta as { activeLifeId: string }).activeLifeId).toBeTruthy()
+    const catalog = await (await s.app.request('/api/catalog')).json()
+    const origins = (catalog as { origins: { available: boolean }[] }).origins
+    expect(origins.filter((o) => o.available).length).toBe(4)
   })
 
-  it('未解锁世界 403；进入世界初始化 flag；HTTP 恢复当前局', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-
-    expect(httpErrorOf(() => s.service.enterWorld(run.id, 'qingyunmen')).code).toBe('world_locked')
-    expect(httpErrorOf(() => s.service.enterWorld(run.id, 'nope')).code).toBe('world_not_found')
-
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-    expect(entered.phase).toBe('in_world')
-    expect(entered.visit?.worldId).toBe('bianlidian')
-    expect(Object.values(entered.visit?.flags ?? {}).every((v) => v === false)).toBe(true)
-
-    const res = await s.app.request('/api/runs/active')
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { run: RunState }
-    expect(body.run.id).toBe(run.id)
-    expect(body.run.version).toBe(entered.version)
-  })
-
-  it('每局每世界最多完成一次；跨局可再进', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-    // 模拟已完成
-    const done: RunState = {
-      ...entered,
-      phase: 'hub',
-      visit: null,
-      currentWorldId: null,
-      worldCompletions: ['bianlidian'],
-      version: entered.version + 1,
-    }
-    expect(s.repos.saveRun(done, entered.version, NOW)).toBe(true)
-    expect(httpErrorOf(() => s.service.enterWorld(run.id, 'bianlidian')).code).toBe(
-      'already_completed_this_run'
+  it('v1.0 残留 meta：迁移 v3 清空 + ensureMeta 形状防御，catalog 不再 500', () => {
+    const db = openDb(':memory:')
+    // 模拟用户库：迁移已到 v2，但 meta 里是 v1.0 形状的继承层
+    db.prepare('INSERT INTO meta (id, data) VALUES (1, ?)').run(
+      JSON.stringify({ lifespanCap: 60, permanentClearedWorlds: [], memories: [], deathCount: 0, runsCount: 1 })
     )
+    const repos = new Repos(db)
+    const mock = new MockProvider()
+    const config = { ...loadConfig({}), sqlitePath: ':memory:' }
+    const service = new GameService({ db, config, provider: mock, repos })
+
+    const info = service.getMeta()
+    expect(info.meta.livesCount).toBe(0) // v1 残留被重建
+    expect(info.meta.unlockedOrigins).toEqual([])
+    expect(() => service.catalog()).not.toThrow()
+    const card = service.catalog().origins.find((o) => o.id === 'menpai_dizi')
+    expect(card?.available).toBe(false)
   })
 })
 
-describe('P2：回合、幂等与并发', () => {
-  it('SSE 流：delta + result；寿命 -1；turn_log 落库', async () => {
+describe('P2：行动、幂等与并发', () => {
+  it('固定行动（用饭）：温饱上升、版本+1；相同 requestId 重放同结果', async () => {
     const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
+    const { life } = s.service.createLife('nongjia_zi')
+    life.food = 4
+    expect(s.repos.saveLife(life, life.version, NOW)).toBe(true)
 
-    const res = await postJson(s.app, `/api/runs/${run.id}/turn`, {
-      requestId: 'req-1',
-      clientVersion: entered.version,
-      input: '检查收银台',
+    const res = await act(s, life.id, life.version, { kind: 'action', actionId: 'yongfan' }, 'req-meal')
+    expect(res.life.food).toBe(8)
+    expect(res.life.version).toBe(life.version + 1)
+    expect(res.degraded).toBe(false)
+
+    const replay = await act(s, life.id, 999, { kind: 'action', actionId: 'yongfan' }, 'req-meal')
+    expect(replay.life.food).toBe(8) // 重放，不再消耗
+  })
+
+  it('银两不足 → 400 invalid_action，状态不变', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('nongjia_zi')
+    life.money = 0
+    s.repos.saveLife(life, life.version, NOW)
+    const err = await act(s, life.id, life.version, { kind: 'action', actionId: 'zhusu' }).catch(
+      (e: unknown) => e as HttpError
+    )
+    expect((err as HttpError).code).toBe('invalid_action')
+  })
+
+  it('并发提交（不同 requestId 同版本）：仅一个成功', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('nongjia_zi')
+    const results = await Promise.allSettled([
+      s.service.submitAct(life.id, 'a', life.version, { kind: 'action', actionId: 'yongfan' }),
+      s.service.submitAct(life.id, 'b', life.version, { kind: 'action', actionId: 'yongfan' }),
+    ])
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1)
+    const err = (results[1] as PromiseRejectedResult).reason as HttpError
+    expect(err).toBeInstanceOf(HttpError)
+    expect(err.code).toBe('version_conflict')
+  })
+
+  it('自由行动 + mock /grow：小额成长生效；/bad-grow 降级不变', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('shijing_youer')
+    const atkBefore = life.attrs.atk
+
+    const ok = await act(s, life.id, life.version, { kind: 'free', input: '/grow atk 路见不平出了一手' })
+    expect(ok.degraded).toBe(false)
+    expect(ok.life.attrs.atk).toBe(atkBefore + 1)
+
+    const bad = await act(s, ok.life.version ? ok.life.id : life.id, ok.life.version, {
+      kind: 'free',
+      input: '/bad-grow 又_bad-grow',
+    })
+    expect(bad.degraded).toBe(true)
+    expect(bad.life.attrs.int).toBe(ok.life.attrs.int) // 类别不匹配被拒，属性不变
+  })
+
+  it('SSE：act 流含 delta 与 result 事件', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('nongjia_zi')
+    const res = await postJson(s.app, `/api/lives/${life.id}/act`, {
+      requestId: 'sse-1',
+      clientVersion: life.version,
+      act: { kind: 'action', actionId: 'yongfan' },
     })
     expect(res.status).toBe(200)
-    expect(res.headers.get('content-type')).toContain('text/event-stream')
-    const parsed = parseSseResult(await res.text())
-    expect(parsed.hasDelta).toBe(true)
-    expect(parsed.result).toBeTruthy()
-    expect(parsed.result?.run.lifespan).toBe(59)
-    expect(parsed.result?.run.version).toBe(entered.version + 1)
-    expect(parsed.result?.record.playerInput).toBe('检查收银台')
-
-    const logs = s.repos.turnRange(run.id, 0, 1)
-    expect(logs).toHaveLength(1)
-    expect(logs[0]?.turn).toBe(1)
-  })
-
-  it('相同 requestId 重放：返回同一结果，寿命不重复扣', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-
-    const first = await s.service.submitTurn(run.id, 'same-req', entered.version, '走')
-    const replay = await s.service.submitTurn(run.id, 'same-req', 999, '走')
-    expect(replay.run.turn).toBe(first.run.turn)
-    expect(replay.run.lifespan).toBe(first.run.lifespan)
-    expect(replay.run.version).toBe(first.run.version)
-  })
-
-  it('并发提交（不同 requestId、同一版本）：只有一个提交成功', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-
-    const results = await Promise.allSettled([
-      s.service.submitTurn(run.id, 'a', entered.version, '动作A'),
-      s.service.submitTurn(run.id, 'b', entered.version, '动作B'),
-    ])
-    const fulfilled = results.filter((r) => r.status === 'fulfilled')
-    const rejected = results.filter((r) => r.status === 'rejected')
-    expect(fulfilled).toHaveLength(1)
-    expect(rejected).toHaveLength(1)
-    const err = (rejected[0] as PromiseRejectedResult).reason
-    expect(err).toBeInstanceOf(HttpError)
-    expect((err as HttpError).code).toBe('version_conflict')
-
-    // 失败方的 claim 已释放：同 requestId 可重试
-    const retry = await s.service.submitTurn(run.id, 'b', (fulfilled[0] as PromiseFulfilledResult<TurnResponse>).value.run.version, '动作B')
-    expect(retry.run.turn).toBe(2)
-  })
-
-  it('客户端版本过期 → 409 version_conflict', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    s.service.enterWorld(run.id, 'bianlidian')
-    const err = await s.service
-      .submitTurn(run.id, 'stale', 999, '走')
-      .catch((e: unknown) => e as HttpError)
-    expect(err).toBeInstanceOf(HttpError)
-    expect((err as HttpError).code).toBe('version_conflict')
-  })
-
-  it('输入超长拒绝', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    s.service.enterWorld(run.id, 'bianlidian')
-    const err = await s.service
-      .submitTurn(run.id, 'long', 2, 'x'.repeat(INPUT_MAX_CHARS + 1))
-      .catch((e: unknown) => e as HttpError)
-    expect((err as HttpError).code).toBe('input_too_long')
+    const text = await res.text()
+    expect(text).toContain('event: delta')
+    expect(text).toContain('event: result')
   })
 })
 
-describe('P1/P5：完整通关线（便利店）+ 寿命上限继承（65）', () => {
-  it('9 回合通关：+15 寿命、meta 上限 +5、解锁青云门、生成记忆任务', async () => {
+describe('P2：事件抉择与战斗', () => {
+  /** 白盒：直接把待抉择事件注入活跃一世 */
+  function injectEvent(s: Setup, life: LifeState, eventId: string): LifeState {
+    const injected: LifeState = { ...life, pendingEventId: eventId }
+    expect(s.repos.saveLife(injected, life.version, NOW)).toBe(true)
+    return injected
+  }
+
+  it('事件抉择开战 → 战斗至结束（败北重伤）', async () => {
     const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-    const { run: after, last } = await runFlags(s, run.id, entered, BIANLIDIAN_WIN)
+    const { life } = s.service.createLife('shijing_youer')
+    const injected = injectEvent(s, life, 'e_baofei')
 
-    expect(last.outcome.kind).toBe('world_completed')
-    expect(after.phase).toBe('hub')
-    expect(after.worldCompletions).toEqual(['bianlidian'])
-    // 60 - 9 + 15 = 66 → 截断到本局上限 60
-    expect(after.lifespan).toBe(60)
+    const idx = 1 // 「拔拳相向」
+    const chosen = await act(s, life.id, injected.version, { kind: 'event_choice', index: idx })
+    expect(chosen.battleStarted?.enemyName).toBe('赵横')
+    expect(chosen.life.pendingBattle).toBeTruthy()
 
-    const meta = s.repos.loadMeta()
-    expect(meta?.lifespanCap).toBe(65)
-    expect(meta?.permanentClearedWorlds).toEqual(['bianlidian'])
+    let cur: BattleResponse = chosen as unknown as BattleResponse
+    let guard = 0
+    while (cur.life.pendingBattle && guard < 100) {
+      guard++
+      cur = await battleTurn(s, life.id, cur.life.version, { kind: 'attack' })
+    }
+    expect(cur.life.pendingBattle).toBeNull()
+    expect(['win', 'lose', 'fled']).toContain(cur.battle.result)
+    if (cur.battle.result === 'lose') {
+      expect(cur.life.injured).toBe(true)
+      expect(cur.life.phase).toBe('alive') // 赵横不下死手
+    }
+  })
 
-    const info = s.service.getMeta()
-    expect(info.unlockedWorldIds).toContain('qingyunmen')
-    expect(info.prototypeComplete).toBe(false)
+  it('战斗中禁止行动（409 in_battle）', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('shijing_youer')
+    const injected = injectEvent(s, life, 'e_baofei')
+    const chosen = await act(s, life.id, injected.version, { kind: 'event_choice', index: 1 })
+    expect(chosen.life.pendingBattle).toBeTruthy()
+    const err = await s.service
+      .submitAct(life.id, crypto.randomUUID(), chosen.life.version, {
+        kind: 'action',
+        actionId: 'yongfan',
+      })
+      .catch((e: unknown) => e as HttpError)
+    expect((err as HttpError).code).toBe('in_battle')
+  })
 
-    const tasks = s.repos.openMemoryTasks(run.id)
-    expect(tasks).toHaveLength(1)
-    expect(tasks[0]?.kind).toBe('world')
-
-    // 本局同一世界不能重复通关
-    expect(httpErrorOf(() => s.service.enterWorld(run.id, 'bianlidian')).code).toBe(
-      'already_completed_this_run'
+  it('不可用选项被拒绝（choice_unavailable）', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('nongjia_zi')
+    const injected = injectEvent(s, life, 'e_baofei')
+    const err = await act(s, life.id, injected.version, { kind: 'event_choice', index: 99 }).catch(
+      (e: unknown) => e as HttpError
     )
+    expect((err as HttpError).code).toBe('bad_choice')
   })
 })
 
-describe('P3：记忆提炼与重试', () => {
-  it('通关记忆：提炼入库、重复 retry 不重复处理；失败标记后可恢复', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-    await runFlags(s, run.id, entered, BIANLIDIAN_WIN)
+describe('P2：死亡、轮回与继承', () => {
+  /** 断粮后连过日子直到饿死 */
+  async function starveToEnd(s: Setup, life: LifeState): Promise<ActResponse> {
+    let cur = life
+    for (let i = 0; i < 8; i++) {
+      const res = await act(s, life.id, cur.version, { kind: 'action', actionId: 'guoyiri' })
+      cur = res.life
+      if (res.ended) return res
+    }
+    throw new Error('断粮 8 日仍未死亡')
+  }
 
-    // 成功提炼
+  it('断粮饿死 → 履历/记忆任务/新一世可用；settle 幂等', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('nongjia_zi')
+    life.food = 0
+    expect(s.repos.saveLife(life, life.version, NOW)).toBe(true)
+
+    const res = await starveToEnd(s, life)
+    expect(res.life.phase).toBe('ended')
+    expect(res.life.deathCause).toBe('starve')
+
+    const settle1 = s.service.settleReconcile(life.id)
+    const settle2 = s.service.settleReconcile(life.id)
+    expect(settle1.meta.livesCount).toBe(1)
+    expect(settle2.meta.livesCount).toBe(1)
+    expect(settle1.meta.history[0]?.deathCause).toBe('starve')
+
+    // 记忆提炼：成功 → 记忆入库；重复 retry 无重复
     s.mock.push({
       type: 'raw',
-      text: JSON.stringify({ memories: ['守规则的人活到天亮', '店长只在凌晨三点出现，只收小票'] }),
+      text: JSON.stringify({ memories: ['贫民窟的破庙夜里能挡风', '坊市恶霸赵横欺软怕硬'] }),
     })
-    let r = await s.service.retryMemory(run.id)
-    expect(r.processed).toBe(1)
-    expect(r.failed).toBe(0)
-    expect(r.meta.memories.map((m) => m.text)).toContain('守规则的人活到天亮')
-
-    // 再次 retry：无待处理任务
-    r = await s.service.retryMemory(run.id)
-    expect(r.processed).toBe(0)
-    expect(r.meta.memories).toHaveLength(2)
-
-    // 失败路径：待处理任务标记 failed，旧记忆保留
-    s.repos.insertMemoryTask(
-      { id: 'task-2', runId: run.id, kind: 'death', worldId: null, fromTurn: 0, toTurn: 1 },
-      NOW
-    )
-    s.mock.push({ type: 'raw', text: 'not-json' })
-    r = await s.service.retryMemory(run.id)
-    expect(r.failed).toBe(1)
-    expect(r.meta.memories).toHaveLength(2)
-    expect(s.repos.openMemoryTasks(run.id)[0]?.status).toBe('failed')
-
-    // 恢复：好脚本重试成功，且不重复发奖（奖励只在结算时发）
-    s.mock.push({ type: 'raw', text: JSON.stringify({ memories: ['仓库敲门要等三声'] }) })
-    r = await s.service.retryMemory(run.id)
-    expect(r.processed).toBe(1)
-    expect(r.failed).toBe(0)
-    expect(r.meta.memories).toHaveLength(3)
-    expect(s.repos.loadMeta()?.lifespanCap).toBe(65) // 无重复奖励
-  })
-
-  it('继承记忆注入后续世界/后续局的 prompt（验收：继承可感知）', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-    await runFlags(s, run.id, entered, BIANLIDIAN_WIN)
-    s.mock.push({ type: 'raw', text: JSON.stringify({ memories: ['便利店的第三条规则是假的'] }) })
-    await s.service.retryMemory(run.id)
-
-    // 同一局穿梭到下一个世界：prompt 已含继承记忆
-    const enteredQy = s.service.enterWorld(run.id, 'qingyunmen')
-    const promptQy = buildTurnPrompt({
-      world: getWorld('qingyunmen')!,
-      run: enteredQy,
-      meta: s.repos.loadMeta()!,
-      playerInput: '去执事堂',
-    })
-    expect(promptQy.turns[0]?.content).toContain('【继承记忆')
-    expect(promptQy.turns[0]?.content).toContain('便利店的第三条规则是假的')
-  })
-})
-
-describe('P5：死亡线 + 结算兜底 + 新局继承', () => {
-  it('体质归零死亡：run 结束、死亡计数、settle 幂等、新局属性重置且寿命=继承上限', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    // 先通关便利店拿 65 上限
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-    await runFlags(s, run.id, entered, BIANLIDIAN_WIN)
-
-    // 进风雪山庄（已随青云门链解锁？不——只通了便利店，解锁的是青云门）
-    const entered2 = s.service.enterWorld(run.id, 'qingyunmen')
-    expect(entered2.phase).toBe('in_world')
-
-    let cur = entered2
-    for (let i = 0; i < 3; i++) {
-      cur = (await s.service.submitTurn(run.id, crypto.randomUUID(), cur.version, '/dmg con 3')).run
-    }
-    expect(cur.attrs.con).toBe(1)
-    const deathTurn = await s.service.submitTurn(run.id, crypto.randomUUID(), cur.version, '/dmg con 3')
-    expect(deathTurn.outcome).toEqual({ kind: 'dead', cause: 'con' })
-    expect(deathTurn.run.phase).toBe('dead')
-    expect(deathTurn.run.deathCause).toBe('con')
-
-    const meta = s.repos.loadMeta()
-    expect(meta?.deathCount).toBe(1)
-
-    // settle 幂等
-    const s1 = s.service.settleReconcile(run.id)
-    const s2 = s.service.settleReconcile(run.id)
-    expect(s1.meta.deathCount).toBe(1)
-    expect(s2.meta.deathCount).toBe(1)
-
-    // 新局：属性 10，寿命 = 65；死亡后新局 prompt 含继承记忆
-    s.mock.push({ type: 'raw', text: JSON.stringify({ memories: ['无话店长只收小票'] }) })
-    const mem = await s.service.retryMemory(run.id)
+    const mem = await s.service.retryMemory(life.id)
     expect(mem.processed).toBe(1)
+    expect(mem.meta.memories.length).toBe(2)
+    const mem2 = await s.service.retryMemory(life.id)
+    expect(mem2.processed).toBe(0)
 
-    const { run: run2 } = s.service.createRun()
-    expect(run2.attrs).toEqual({ con: 10, mind: 10, agi: 10 })
-    expect(run2.lifespan).toBe(65)
-    expect(run2.capSnapshot).toBe(65)
-    const e2 = s.service.enterWorld(run2.id, 'bianlidian')
-    const prompt = buildTurnPrompt({
-      world: getWorld('bianlidian')!,
-      run: e2,
-      meta: s.repos.loadMeta()!,
-      playerInput: '看向冷柜',
+    // 新一世可开局
+    const { life: life2 } = s.service.createLife('shijing_youer')
+    expect(life2.phase).toBe('alive')
+  })
+
+  it('选择型结局：满足条件可选并写结局章', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('shanghang_xuetu')
+    life.money = 350
+    expect(s.repos.saveLife(life, life.version, NOW)).toBe(true)
+
+    const res = await act(s, life.id, life.version, {
+      kind: 'ending',
+      endingId: 'yuanzou_haiwai',
     })
-    expect(prompt.turns[0]?.content).toContain('无话店长只收小票')
+    expect(res.ended).toBe(true)
+    expect(res.endInfo?.endingId).toBe('yuanzou_haiwai')
+    expect(res.endInfo?.chapter.length).toBeGreaterThan(0)
+
+    const settle = s.service.settleReconcile(life.id)
+    expect(settle.meta.history[0]?.endingId).toBe('yuanzou_haiwai')
   })
 
-  it('寿命归零死亡（降级回合也判死）', async () => {
+  it('选择型结局条件不足 → 400', async () => {
     const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-    // 扣到 1 点：59 回合太多——直接改快照模拟长局
-    const low: RunState = { ...entered, lifespan: 1, version: entered.version + 1 }
-    expect(s.repos.saveRun(low, entered.version, NOW)).toBe(true)
-    s.mock.push({ type: 'error', kind: 'timeout', message: '超时' })
-    const res = await s.service.submitTurn(run.id, 'deg-death', low.version, '走')
-    expect(res.degraded).toBe(true)
-    expect(res.outcome).toEqual({ kind: 'dead', cause: 'lifespan' })
-    expect(res.record.narrative).toBe(DEGRADED_NARRATIVE)
-  })
-})
-
-describe('P3：降级回合与滚动摘要', () => {
-  it('非法 JSON：重试后仍失败 → 环境回合（-1 寿命、无申报变更、确定性叙事）', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    const entered = s.service.enterWorld(run.id, 'bianlidian')
-    const res = await s.service.submitTurn(run.id, 'bad-1', entered.version, '/bad-json 又_bad-json')
-    expect(res.degraded).toBe(true)
-    expect(res.run.lifespan).toBe(59)
-    expect(res.run.visit?.flags['read_ruleboard']).toBe(false)
-    expect(res.record.degraded).toBe(true)
-    expect(res.record.narrative).toBe(DEGRADED_NARRATIVE)
+    const { life } = s.service.createLife('nongjia_zi')
+    const err = await act(s, life.id, life.version, {
+      kind: 'ending',
+      endingId: 'yuanzou_haiwai',
+    }).catch((e: unknown) => e as HttpError)
+    expect((err as HttpError).code).toBe('ending_unavailable')
   })
 
-  it('第 10 回合触发滚动摘要：成功更新；失败保留旧摘要', async () => {
+  it('轮回历史 API', async () => {
     const s = setup()
-    const { run } = s.service.createRun()
-    let cur = s.service.enterWorld(run.id, 'bianlidian')
-    for (let i = 1; i <= 9; i++) {
-      cur = (await s.service.submitTurn(run.id, `t${i}`, cur.version, `行动${i}`)).run
-    }
-    // 队列顺序：先回合输出，后摘要输出
-    s.mock.push({ type: 'raw', text: JSON.stringify({ narrative: '夜更深了。', suggestedActions: ['观察四周'] }) })
-    s.mock.push({ type: 'raw', text: JSON.stringify({ summary: '店员熟悉了规则，平安度过前夜。' }) })
-    const tenth = await s.service.submitTurn(run.id, 't10', cur.version, '行动10')
-    cur = tenth.run
-    expect(tenth.run.turn).toBe(10)
-    const stored = s.service.getRun(run.id)
-    expect(stored.summary).toContain('店员')
-    expect(stored.summarizedThroughTurn).toBe(10)
+    const { life } = s.service.createLife('nongjia_zi')
+    life.food = 0
+    s.repos.saveLife(life, life.version, NOW)
+    await starveToEnd(s, life)
+    s.service.settleReconcile(life.id)
+    const res = await s.app.request('/api/lives')
+    const body = (await res.json()) as { history: { deathCause: string | null }[] }
+    expect(body.history).toHaveLength(1)
+    expect(body.history[0]?.deathCause).toBe('starve')
+  })
 
-    // 第 20 回合：摘要失败 → 保留旧摘要
-    for (let i = 11; i <= 19; i++) {
-      cur = (await s.service.submitTurn(run.id, `t${i}`, cur.version, `行动${i}`)).run
-    }
-    s.mock.push({ type: 'raw', text: JSON.stringify({ narrative: '长夜漫漫。', suggestedActions: ['观察四周'] }) })
-    s.mock.push({ type: 'raw', text: 'nope' })
-    await s.service.submitTurn(run.id, 't20', cur.version, '行动20')
-    const after = s.service.getRun(run.id)
-    expect(after.summary).toContain('店员')
-    expect(after.summarizedThroughTurn).toBe(10)
+  it('记忆提炼失败不阻塞、可重试恢复（沿用 v1.0 语义）', async () => {
+    const s = setup()
+    const { life } = s.service.createLife('nongjia_zi')
+    life.food = 0
+    s.repos.saveLife(life, life.version, NOW)
+    await starveToEnd(s, life)
+
+    s.mock.push({ type: 'raw', text: 'not-json' })
+    const fail = await s.service.retryMemory(life.id)
+    expect(fail.failed).toBe(1)
+    expect(fail.meta.memories).toHaveLength(0)
+
+    s.mock.push({ type: 'raw', text: JSON.stringify({ memories: ['破庙能挡风'] }) })
+    const ok = await s.service.retryMemory(life.id)
+    expect(ok.processed).toBe(1)
+    expect(ok.meta.memories.map((m) => m.text)).toContain('破庙能挡风')
   })
 })
 
-describe('P5：验收矩阵——寿命上限 65 → 65 → 70 与原型完成', () => {
-  it('首通便利店 65；跨局重通仍 65；再首通青云门 70；三世界全通后允许新局', async () => {
-    const s = setup()
-    // 局 1：通便利店 + 死在青云门
-    const { run } = s.service.createRun()
-    const e1 = s.service.enterWorld(run.id, 'bianlidian')
-    await runFlags(s, run.id, e1, BIANLIDIAN_WIN)
-    const e2 = s.service.enterWorld(run.id, 'qingyunmen')
-    let cur = e2
-    for (let i = 0; i < 4; i++) {
-      cur = (await s.service.submitTurn(run.id, crypto.randomUUID(), cur.version, '/dmg con 3')).run
-    }
-    expect(cur.phase).toBe('dead')
-
-    // 局 2：重通便利店（上限仍 65），再首通青云门（上限 70）
-    const { run: run2 } = s.service.createRun()
-    expect(run2.lifespan).toBe(65)
-    const r2e1 = s.service.enterWorld(run2.id, 'bianlidian')
-    const win1 = await runFlags(s, run2.id, r2e1, BIANLIDIAN_WIN)
-    expect(win1.last.worldCompleted?.firstClearCapBonusGranted).toBe(false)
-    expect(s.repos.loadMeta()?.lifespanCap).toBe(65)
-
-    const qy = [
-      '/flag get_mission',
-      '/flag spirit_array',
-      '/flag breakthrough',
-      '/flag elder_favor',
-      '/flag win_first_round',
-      '/flag win_final',
-    ]
-    const r2e2 = s.service.enterWorld(run2.id, 'qingyunmen')
-    const win2 = await runFlags(s, run2.id, r2e2, qy)
-    expect(win2.last.worldCompleted?.firstClearCapBonusGranted).toBe(true)
-    expect(s.repos.loadMeta()?.lifespanCap).toBe(70)
-
-    // 同一局继续：首通风雪山庄（上限 75），三世界全部永久通关 → 原型完成
-    const fx = [
-      '/flag scout_inn',
-      '/flag befriend_xiaoer',
-      '/flag overhear_plot',
-      '/flag identify_officer',
-      '/flag win_duel',
-      '/flag expose_innkeeper',
-    ]
-    const r2e3 = s.service.enterWorld(run2.id, 'fengxue')
-    const win3 = await runFlags(s, run2.id, r2e3, fx)
-    expect(win3.last.prototypeComplete).toBe(true)
-    expect(s.repos.loadMeta()?.lifespanCap).toBe(75)
-
-    // run2 仍在枢纽（未死亡），但全部世界已完成 → 允许开新局
-    const { run: run3 } = s.service.createRun()
-    expect(run3.lifespan).toBe(75)
+describe('人物摘要存档', () => {
+  it('收录叙事人物、恢复档案且不改变数值恩怨；重放不重复', async () => {
+    const s = setup(() => 0.5)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      const beforeNpcs = { ...life.npcs }
+      s.mock.push({ type: 'raw', text: JSON.stringify({
+        narrative: '你在码头结识阿舟，他喜爱听书，为漕帮运货。',
+        characters: [
+          { name: '阿舟', gender: '男', organization: '漕帮', hobby: '听书', summary: '在码头相识，为漕帮运货。', relation: '新识' },
+          { name: '不存在的人', gender: '未详', organization: '', hobby: '', summary: '', relation: '' },
+        ],
+      }) })
+      const result = await act(s, life.id, life.version, { kind: 'free', input: '到码头看看' }, 'people-1')
+      expect(result.life.characterNotes?.['阿舟']?.hobby).toBe('听书')
+      expect(result.life.characterNotes?.['不存在的人']).toBeUndefined()
+      expect(result.life.npcs).toEqual(beforeNpcs)
+      const restored = s.service.getLife(life.id)
+      expect(restored.characterNotes).toEqual(result.life.characterNotes)
+      const replay = await act(s, life.id, life.version, { kind: 'free', input: '到码头看看' }, 'people-1')
+      expect(replay.life.characterNotes).toEqual(result.life.characterNotes)
+      expect(replay.life.version).toBe(result.life.version)
+      s.mock.push({ type: 'raw', text: JSON.stringify({ narrative: '阿舟又来与你打招呼。', characters: [{ name: '阿舟', gender: '未详', organization: '', hobby: '', summary: '再次在码头相逢。', relation: '' }] }) })
+      const next = await act(s, life.id, restored.version, { kind: 'free', input: '与阿舟打招呼' })
+      expect(next.life.characterNotes?.['阿舟']).toMatchObject({ gender: '男', hobby: '听书', summary: '再次在码头相逢。' })
+    } finally { s.db.close() }
   })
 })
 
-describe('HTTP /settle 与 /memory/retry 端点', () => {
-  it('幂等 settle 与 memory retry 经 HTTP 可用', async () => {
-    const s = setup()
-    const { run } = s.service.createRun()
-    const r1 = await postJson(s.app, `/api/runs/${run.id}/settle`, {})
-    expect(r1.status).toBe(200)
-    const r2 = await postJson(s.app, `/api/runs/${run.id}/settle`, {})
-    expect(r2.status).toBe(200)
-    const m1 = await postJson(s.app, `/api/runs/${run.id}/memory/retry`, {})
-    expect(m1.status).toBe(200)
-    const mb = (await m1.json()) as { processed: number }
-    expect(mb.processed).toBe(0)
+describe('旧经历人物整理', () => {
+  it('仅更新档案、请求幂等、不推进时间或改变数值', async () => {
+    const s = setup(() => .5)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      life.history.push({ seq: 1, day: 0, slot: 0, kind: 'action', label: '相识', text: '周劲与阿舟在威远镖局和你相识。', degraded: false })
+      s.repos.saveLifeDataOnly(life, NOW)
+      s.mock.push({ type: 'raw', text: JSON.stringify({ characters: [{ name: '周劲', gender: '未详', organization: '威远镖局', hobby: '', summary: '在镖局相识。', relation: '相识' }] }) })
+      const result = await s.service.summarizeCharacters(life.id, 'extract-1', life.version)
+      expect(result.life.characterNotes?.['周劲']?.organization).toBe('威远镖局')
+      expect(result.life.day).toBe(life.day)
+      expect(result.life.slot).toBe(life.slot)
+      expect(result.life.attrs).toEqual(life.attrs)
+      expect(result.life.history).toEqual(life.history)
+      expect((await s.service.summarizeCharacters(life.id, 'extract-1', life.version)).life.version).toBe(result.life.version)
+    } finally { s.db.close() }
   })
 })
 
-describe('meta 端点', () => {
-  it('GET /api/meta 返回继承层与解锁信息', async () => {
-    const s = setup()
-    const res = await s.app.request('/api/meta')
-    const body = (await res.json()) as {
-      meta: MetaState
-      unlockedWorldIds: string[]
-      prototypeComplete: boolean
-    }
-    expect(body.meta.lifespanCap).toBe(60)
-    expect(body.unlockedWorldIds).toEqual(['bianlidian'])
-    expect(body.prototypeComplete).toBe(false)
+describe('刷新后恢复推荐与玩家选择', () => {
+  it('原文、推荐随事务落盘；HTTP 恢复和重复请求保持一致', async () => {
+    const s = setup(() => .5)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      s.mock.push({ type: 'raw', text: JSON.stringify({ narrative: '你向路人询问去码头的路。', suggestedActions: ['到码头看看', '留在坊市'] }) })
+      const input = '我向路人询问码头怎么走'
+      const result = await act(s, life.id, life.version, { kind: 'free', input }, 'refresh-turn')
+      expect(result.life.history.at(-1)?.playerInput).toBe(input)
+      expect(result.life.suggestedActions).toEqual(result.suggestions)
+      const oldSnapshot = s.service.getLife(life.id)
+      delete oldSnapshot.suggestedActions
+      s.repos.saveLifeDataOnly(oldSnapshot, NOW)
+      const restored = await s.app.request('/api/lives/active')
+      const body = await restored.json() as { life: LifeState }
+      expect(body.life.history.at(-1)?.playerInput).toBe(input)
+      expect(body.life.suggestedActions).toEqual(['到码头看看', '留在坊市'])
+      const replay = await act(s, life.id, life.version, { kind: 'free', input }, 'refresh-turn')
+      expect(replay.life.history).toEqual(body.life.history)
+      const next = await act(s, life.id, result.life.version, { kind: 'action', actionId: 'lianwu' })
+      expect(next.life.history.at(-1)?.playerInput).toBe('练武')
+      expect(next.life.history.filter(h => h.playerInput === input)).toHaveLength(1)
+    } finally { s.db.close() }
+  })
+})
+
+describe('回合时间与事件阶段', () => {
+  it('AI 收到夜到翌晨的实际时间区间，待抉择事件不会被其他行动拖到下一时辰', async () => {
+    const s = setup(() => .5)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      life.slot = 3
+      s.repos.saveLifeDataOnly(life, NOW)
+      let prompt = ''
+      const generate = s.mock.generate.bind(s.mock)
+      s.mock.generate = async (request, hooks) => {
+        prompt = request.turns.map(t => t.content).join('\n')
+        return generate(request, hooks)
+      }
+      const next = await act(s, life.id, life.version, { kind: 'action', actionId: 'zhusu' })
+      expect(next.life.day).toBe(1)
+      expect(next.life.slot).toBe(0)
+      expect(prompt).toContain('行动开始：第一年 春月一日 · 夜')
+      expect(prompt).toContain('反馈结束：第一年 春月二日 · 晨')
+      expect(prompt).toContain('时辰：晨')
+      const pending = s.service.getLife(life.id)
+      pending.pendingEventId = 'e_baofei'
+      s.repos.saveLifeDataOnly(pending, NOW)
+      await expect(act(s, life.id, pending.version, { kind: 'free', input: '去练武' })).rejects.toMatchObject({ code: 'pending_event' })
+      expect(s.service.getLife(life.id).slot).toBe(0)
+      expect(s.service.getLife(life.id).pendingEventId).toBe('e_baofei')
+      const resolved = await act(s, life.id, pending.version, { kind: 'event_choice', index: 2 })
+      expect(resolved.life.pendingEventId).toBeNull()
+      expect(prompt).toContain('反馈结束：第一年 春月二日 · 午')
+    } finally { s.db.close() }
   })
 })

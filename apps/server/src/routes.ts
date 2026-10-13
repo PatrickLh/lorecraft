@@ -1,8 +1,9 @@
-/** HTTP API（plan P2 表）+ SSE 回合流。统一错误格式 { error: { code, message } }。 */
+/** v2.0 HTTP API（plan P2）+ SSE 流。统一错误 { error: { code, message } }。 */
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
+import type { BattleCommand } from '@lorecraft/core'
 import { HttpError } from './errors.js'
-import type { GameService } from './game.js'
+import type { ActRequest, GameService } from './game.js'
 
 export function createApp(service: GameService): Hono {
   const app = new Hono()
@@ -18,91 +19,128 @@ export function createApp(service: GameService): Hono {
   app.use('/api/*', bodyLimit({ maxSize: 32 * 1024 }))
 
   app.get('/api/meta', (c) => c.json(service.getMeta()))
+  app.get('/api/catalog', (c) => c.json(service.catalog()))
+  app.get('/api/lives', (c) => c.json({ history: service.history() }))
 
-  app.get('/api/worlds', (c) => c.json({ worlds: service.listWorlds() }))
-
-  app.post('/api/runs', (c) => c.json(service.createRun(), 201))
-
-  app.get('/api/runs/active', (c) => {
-    // 没有进行中的局是常态（首次启动/死亡后），返回 200 + null 而非 404
-    return c.json({ run: service.getActiveRun() })
+  app.post('/api/lives', async (c) => {
+    const body = await parseBody<{ originId?: string }>(c)
+    if (!body.originId) throw new HttpError(400, 'missing_origin', '缺少 originId')
+    return c.json(service.createLife(body.originId), 201)
   })
 
-  app.get('/api/runs/:id', (c) => c.json({ run: service.getRun(c.req.param('id')) }))
-
-  app.post('/api/runs/:id/enter-world', async (c) => {
-    const body = await parseBody<{ worldId?: string }>(c)
-    if (!body.worldId) throw new HttpError(400, 'missing_world_id', '缺少 worldId')
-    const run = service.enterWorld(c.req.param('id'), body.worldId)
-    return c.json({ run })
-  })
-
-  // 回合：SSE。事件：delta（暂存叙事增量）/ result（最终结果）/ error
-  app.post('/api/runs/:id/turn', async (c) => {
-    const body = await parseBody<{ requestId?: string; clientVersion?: number; input?: string }>(c)
-    if (!body.requestId || typeof body.requestId !== 'string') {
-      throw new HttpError(400, 'missing_request_id', '缺少 requestId')
-    }
-    if (typeof body.clientVersion !== 'number') {
-      throw new HttpError(400, 'missing_client_version', '缺少 clientVersion')
-    }
-    if (typeof body.input !== 'string') {
-      throw new HttpError(400, 'missing_input', '缺少 input')
-    }
-    const runId = c.req.param('id')
-    const encoder = new TextEncoder()
-    const stream = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        let closed = false
-        const send = (event: string, data: unknown): void => {
-          if (closed) return
-          try {
-            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
-          } catch {
-            closed = true
-          }
-        }
-        try {
-          const result = await service.submitTurn(
-            runId,
-            body.requestId as string,
-            body.clientVersion as number,
-            body.input as string,
-            { onDelta: (text) => send('delta', { text }) }
-          )
-          send('result', result)
-        } catch (e) {
-          const he = e instanceof HttpError ? e : null
-          if (!he) console.error('[turn]', e)
-          send('error', {
-            code: he?.code ?? 'internal',
-            message: he?.message ?? '内部错误',
-          })
-        } finally {
-          closed = true
-          try {
-            controller.close()
-          } catch {
-            // 已关闭
-          }
-        }
-      },
-    })
-    return c.newResponse(stream, 200, {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-      'x-accel-buffering': 'no',
+  app.get('/api/lives/active', (c) => {
+    // 无活跃一世是常态：200 + null
+    const life = service.getActiveLife()
+    return c.json({
+      life,
+      event: life ? service.presentLifeEvent(life) : null,
+      availableEndings: life ? service.availableEndings(life) : [],
     })
   })
 
-  app.post('/api/runs/:id/settle', (c) => c.json(service.settleReconcile(c.req.param('id'))))
+  app.get('/api/lives/:id', (c) => {
+    const life = service.getLife(c.req.param('id'))
+    return c.json({
+      life,
+      event: life ? service.presentLifeEvent(life) : null,
+      availableEndings: service.availableEndings(life),
+    })
+  })
 
-  app.post('/api/runs/:id/memory/retry', async (c) =>
+  app.post('/api/lives/:id/act', async (c) => {
+    const body = await parseBody<{
+      requestId?: string
+      clientVersion?: number
+      act?: ActRequest
+    }>(c)
+    if (!body.requestId) throw new HttpError(400, 'missing_request_id', '缺少 requestId')
+    if (typeof body.clientVersion !== 'number') throw new HttpError(400, 'missing_client_version', '缺少 clientVersion')
+    if (!body.act || typeof body.act.kind !== 'string') throw new HttpError(400, 'missing_act', '缺少 act')
+    return sseResponse(c, (send) =>
+      service.submitAct(c.req.param('id'), body.requestId!, body.clientVersion!, body.act!, {
+        onDelta: (text) => send('delta', { text }),
+      })
+    )
+  })
+
+  app.post('/api/lives/:id/battle/turn', async (c) => {
+    const body = await parseBody<{
+      requestId?: string
+      clientVersion?: number
+      command?: BattleCommand
+    }>(c)
+    if (!body.requestId) throw new HttpError(400, 'missing_request_id', '缺少 requestId')
+    if (typeof body.clientVersion !== 'number') throw new HttpError(400, 'missing_client_version', '缺少 clientVersion')
+    if (!body.command || typeof body.command.kind !== 'string') throw new HttpError(400, 'missing_command', '缺少 command')
+    return sseResponse(c, (send) =>
+      service.submitBattleTurn(
+        c.req.param('id'),
+        body.requestId!,
+        body.clientVersion!,
+        body.command!,
+        { onDelta: (text) => send('delta', { text }) }
+      )
+    )
+  })
+
+  app.post('/api/lives/:id/characters/summarize', async (c) => {
+    const body = await parseBody<{ requestId?: string; clientVersion?: number }>(c)
+    if (!body.requestId || !Number.isInteger(body.clientVersion)) throw new HttpError(400, 'bad_request', '缺少请求标识或存档版本')
+    return c.json(await service.summarizeCharacters(c.req.param('id'), body.requestId, body.clientVersion!))
+  })
+
+  app.post('/api/lives/:id/settle', (c) => c.json(service.settleReconcile(c.req.param('id'))))
+
+  app.post('/api/lives/:id/memory/retry', async (c) =>
     c.json(await service.retryMemory(c.req.param('id')))
   )
 
   return app
+}
+
+/** SSE 流：delta / result / error */
+function sseResponse<T>(
+  c: { req: { param: (k: string) => string } },
+  run: (send: (event: string, data: unknown) => void) => Promise<T>
+): Response {
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let closed = false
+      const send = (event: string, data: unknown): void => {
+        if (closed) return
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        } catch {
+          closed = true
+        }
+      }
+      try {
+        const result = await run(send)
+        send('result', result)
+      } catch (e) {
+        const he = e instanceof HttpError ? e : null
+        if (!he) console.error('[sse]', e)
+        send('error', { code: he?.code ?? 'internal', message: he?.message ?? '内部错误' })
+      } finally {
+        closed = true
+        try {
+          controller.close()
+        } catch {
+          // 已关闭
+        }
+      }
+    },
+  })
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    },
+  })
 }
 
 async function parseBody<T>(c: { req: { json: () => Promise<unknown> } }): Promise<T> {

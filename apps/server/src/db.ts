@@ -1,4 +1,4 @@
-/** SQLite 打开与版本化迁移（plan P2）。 */
+/** SQLite 打开与版本化迁移（plan P2）。v2 = v2.0 游戏表（v1.0 存档不保留，README 已声明）。 */
 import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -19,32 +19,48 @@ CREATE TABLE IF NOT EXISTS runs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+`,
+  },
+  {
+    version: 2,
+    sql: `
+DROP TABLE IF EXISTS runs;
+DROP TABLE IF EXISTS turn_logs;
+DROP TABLE IF EXISTS requests;
+DROP TABLE IF EXISTS memory_tasks;
+CREATE TABLE IF NOT EXISTS lives (
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  data TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS turn_logs (
-  run_id TEXT NOT NULL,
-  turn INTEGER NOT NULL,
+  life_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  kind TEXT NOT NULL,
   request_id TEXT,
   degraded INTEGER NOT NULL,
   payload TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  PRIMARY KEY (run_id, turn)
+  PRIMARY KEY (life_id, seq)
 );
 CREATE TABLE IF NOT EXISTS requests (
-  run_id TEXT NOT NULL,
+  life_id TEXT NOT NULL,
   request_id TEXT NOT NULL,
   kind TEXT NOT NULL,
   status TEXT NOT NULL,
   response TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (run_id, request_id)
+  PRIMARY KEY (life_id, request_id)
 );
 CREATE TABLE IF NOT EXISTS memory_tasks (
   id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  world_id TEXT,
-  from_turn INTEGER NOT NULL,
-  to_turn INTEGER NOT NULL,
+  life_id TEXT NOT NULL,
+  from_seq INTEGER NOT NULL,
+  to_seq INTEGER NOT NULL,
   status TEXT NOT NULL,
   error TEXT,
   created_at TEXT NOT NULL,
@@ -67,6 +83,18 @@ CREATE TABLE IF NOT EXISTS events (
   kind TEXT NOT NULL,
   payload TEXT,
   created_at TEXT NOT NULL
+);
+`,
+  },
+  {
+    // v1.0 库升级时 meta 表未随 v2 重建，残留旧形状的继承层数据
+    // （无 livesCount/unlockedOrigins 等字段）→ 直接清空重建（v1.0 存档不保留）
+    version: 3,
+    sql: `
+DROP TABLE IF EXISTS meta;
+CREATE TABLE IF NOT EXISTS meta (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  data TEXT NOT NULL
 );
 `,
   },

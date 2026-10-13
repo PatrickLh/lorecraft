@@ -1,76 +1,57 @@
 /**
- * 继承层规则（plan §2 首次解锁与重复奖励 / 寿命上限）。
- * - 上限 +5 仅在「该世界首次永久通关」时发放，下一局生效。
- * - 解锁推导：无入边的世界为初始世界；某世界解锁 ⟺ 其所有前置世界已永久通关。
+ * 轮回结算（requirement §9）：死亡或结局后，履历入库、出身解锁。
+ * 记忆提炼由服务层调 LLM 后经 applyLifeMemories 注入；武学在 LifeState 间直接拷贝。
  */
-import { INITIAL_LIFESPAN_CAP } from './constants.js'
-import type { MetaState } from './types.js'
+import { UNLEARNED_REQ_DISCOUNT } from './constants.js'
+import type { LifeState, LifeSummary, MetaState, MemoryRecord } from './types.js'
+import { buildLifeSummary } from './life.js'
 
-export function createMetaState(now: string): MetaState {
+export function createMetaState(_now: string): MetaState {
   return {
-    lifespanCap: INITIAL_LIFESPAN_CAP,
-    permanentClearedWorlds: [],
+    livesCount: 0,
     memories: [],
-    deathCount: 0,
-    runsCount: 0,
+    unlockedOrigins: [],
+    history: [],
   }
 }
 
-/** 世界首次永久通关：上限 +5（下一局生效），返回是否为本局实际发放 */
-export function applyWorldFirstClear(
+/** 一世终结：履历入谱、计数；newUnlockedOrigins 由服务层依据本世 flags/身份决定 */
+export function settleLifeEnd(
   meta: MetaState,
-  worldId: string,
-  bonus: number = 5
-): { meta: MetaState; granted: boolean } {
-  if (meta.permanentClearedWorlds.includes(worldId)) {
-    return { meta, granted: false }
+  life: LifeState,
+  now: string,
+  newUnlockedOrigins: string[] = []
+): MetaState {
+  const index = meta.history.length + 1
+  const summary: LifeSummary = buildLifeSummary(life, index, now)
+  return {
+    ...meta,
+    livesCount: meta.livesCount + 1,
+    history: [...meta.history, summary],
+    unlockedOrigins: [...new Set([...meta.unlockedOrigins, ...newUnlockedOrigins])],
+  }
+}
+
+/** 记忆提炼结果并入继承层（去重、超限淘汰最旧） */
+export function applyLifeMemories(
+  meta: MetaState,
+  incoming: string[],
+  opts: { now: string; genId: () => string; maxTotal: number }
+): MetaState {
+  const seen = new Set(meta.memories.map((m: MemoryRecord) => m.text))
+  const merged: MemoryRecord[] = [...meta.memories]
+  for (const text of incoming) {
+    if (seen.has(text)) continue
+    seen.add(text)
+    merged.push({ id: opts.genId(), text, source: 'past_life', createdAt: opts.now })
   }
   return {
-    meta: {
-      ...meta,
-      lifespanCap: meta.lifespanCap + bonus,
-      permanentClearedWorlds: [...meta.permanentClearedWorlds, worldId],
-    },
-    granted: true,
+    ...meta,
+    memories: merged.length > opts.maxTotal ? merged.slice(merged.length - opts.maxTotal) : merged,
   }
 }
 
-export function registerRunStart(meta: MetaState): MetaState {
-  return { ...meta, runsCount: meta.runsCount + 1 }
-}
-
-export function registerDeath(meta: MetaState): MetaState {
-  return { ...meta, deathCount: meta.deathCount + 1 }
-}
-
-export interface WorldGraphNode {
-  id: string
-  unlocks: string[]
-}
-
-/**
- * 解锁集合 = 初始世界（无入边）∪ 「全部前置世界均已永久通关」的世界。
- * 注意是直接前置判定，不传递：通 A 只解锁 A 的直接后继，而非整个链。
- */
-export function unlockedWorldIds(meta: MetaState, worlds: WorldGraphNode[]): Set<string> {
-  const sourcesOf = new Map<string, string[]>()
-  for (const w of worlds) {
-    for (const u of w.unlocks) {
-      const list = sourcesOf.get(u) ?? []
-      list.push(w.id)
-      sourcesOf.set(u, list)
-    }
-  }
-  const unlocked = new Set<string>()
-  for (const w of worlds) {
-    const sources = sourcesOf.get(w.id) ?? []
-    if (sources.length === 0 || sources.every((s) => meta.permanentClearedWorlds.includes(s))) {
-      unlocked.add(w.id)
-    }
-  }
-  return unlocked
-}
-
-export function isPrototypeComplete(meta: MetaState, totalWorlds: number): boolean {
-  return meta.permanentClearedWorlds.length >= totalWorlds
+/** 后续世的武学习得门槛减免（requirement §9） */
+export function reqDiscountForLives(livesCount: number): number {
+  return livesCount > 0 ? UNLEARNED_REQ_DISCOUNT : 0
 }

@@ -1,57 +1,110 @@
-/** 前端视图类型：状态类型直接复用 @lorecraft/core（共享契约），响应形状与 server 对齐。 */
-import type { MetaState, RunState } from '@lorecraft/core'
+/** v2.0 前端类型：状态复用 @lorecraft/core，响应形状与 server 对齐。 */
+import type { BattleState, LifeState, MetaState } from '@lorecraft/core'
 
-export type { MetaState, RunState }
+export type { LifeState, MetaState, BattleState }
 
 export interface MetaInfo {
   meta: MetaState
-  unlockedWorldIds: string[]
-  prototypeComplete: boolean
-  activeRunId: string | null
+  activeLifeId: string | null
   openMemoryTaskCount: number
 }
 
-export interface WorldCard {
+export interface CatalogEntry {
+  id: string
+  name: string
+}
+
+export interface OriginCard {
+  id: string
+  name: string
+  desc: string
+  available: boolean
+  unlockOnly: boolean
+}
+
+export interface MartialCard {
+  id: string
+  name: string
+  category: string
+  tier: number
+  mpCost: number
+  desc: string
+}
+
+export interface WorldCatalog {
+  locations: (CatalogEntry & { desc: string })[]
+  factions: (CatalogEntry & { desc: string; joinable: boolean })[]
+  npcs: { id: string; name: string; faction: string | null; role: string; desc: string }[]
+  actions: { id: string; label: string; desc: string }[]
+  martials: MartialCard[]
+  origins: OriginCard[]
+}
+
+export interface EndInfo {
+  endType: 'death' | 'ending'
+  deathCause: string | null
+  endingId: string | null
+  endingName: string
+  chapterTitle: string
+  chapter: string
+}
+
+export interface EventPresentation {
   id: string
   title: string
-  theme: string
-  intro: string
-  unlocked: boolean
-  permanentlyCleared: boolean
-  clearedThisRun: boolean | null
-  entryActions: string[]
+  text: string
+  choices: { index: number; label: string }[]
 }
 
-export interface WorldCompletedInfo {
-  worldId: string
-  title: string
-  lifespanReward: number
-  firstClearCapBonusGranted: boolean
+export interface EndingOption {
+  id: string
+  name: string
+  desc: string
 }
 
-export interface TurnResponse {
-  run: RunState
-  record: { turn: number; narrative: string; degraded: boolean }
-  outcome:
-    | { kind: 'continue' }
-    | { kind: 'world_completed'; worldId: string; lifespanReward: number }
-    | { kind: 'dead'; cause: 'lifespan' | 'con' | 'mind' }
-  actAdvancedTo: number | null
+export interface ActResponse {
+  life: LifeState
+  narrative: string
   degraded: boolean
   degradedReason: string | null
-  suggestedActions: string[]
-  worldCompleted: WorldCompletedInfo | null
-  prototypeComplete: boolean
+  suggestions: string[]
+  event: EventPresentation | null
+  battleStarted: { enemyName: string; lethal: boolean } | null
+  ended: boolean
+  endInfo: EndInfo | null
+  availableEndings: EndingOption[]
   meta: MetaState
 }
 
-export type DeathCause = 'lifespan' | 'con' | 'mind'
-
-export const DEATH_CAUSE_TEXT: Record<DeathCause, string> = {
-  lifespan: '寿元耗尽',
-  con: '伤重不治（体质归零）',
-  mind: '神魂俱灭（心智归零）',
+export interface BattleResponse {
+  life: LifeState
+  battle: BattleState
+  narrative: string
+  degraded: boolean
+  degradedReason: string | null
+  ended: boolean
+  endInfo: EndInfo | null
+  availableEndings: EndingOption[]
+  meta: MetaState
 }
 
-/** 回合提交的界面状态（plan P4：区分等待/暂存流/已提交/降级/连接中断） */
+export interface LifeSummaryView {
+  index: number
+  originId: string
+  destinyId: string | null
+  endAge: number
+  endType: 'death' | 'ending'
+  deathCause: string | null
+  endingId: string | null
+  martials: { id: string; level: 0 | 1 | 2 }[]
+  peak: { atk: number; def: number; int: number; agi: number }
+  keyEvents: string[]
+}
+
 export type TurnUiState = 'idle' | 'waiting' | 'streaming' | 'degraded' | 'connection_lost'
+
+export const END_CAUSE_TEXT: Record<string, string> = {
+  battle: '横死刀兵',
+  starve: '饿殍雪夜',
+  mischief: '死于非命',
+}

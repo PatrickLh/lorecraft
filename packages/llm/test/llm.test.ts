@@ -1,383 +1,335 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createMetaState, createRunState, enterWorld, type RunState } from '@lorecraft/core'
-import { WORLDS } from '@lorecraft/worlddata'
-import { ClaudeProvider } from '../src/claude.js'
-import { DeepSeekProvider } from '../src/deepseek.js'
-import { runTurnAttempt } from '../src/executor.js'
+import { describe, expect, it } from 'vitest'
+import {
+  createMetaState,
+  createLife,
+  DEGRADED_NARRATIVE,
+  type LifeState,
+  type OriginDefView,
+} from '@lorecraft/core'
+import { runActAttempt, runBattleAttempt, runEndingChapter } from '../src/executor.js'
 import { extractMemories, mergeMemoriesLlm, summarizeHistory } from '../src/memory-run.js'
+import { buildActPrompt, buildBattlePrompt, buildEndingPrompt } from '../src/prompts.js'
 import { MockProvider } from '../src/mock.js'
 import { NarrativeScanner } from '../src/stream-scan.js'
-import { buildTurnPrompt } from '../src/prompts.js'
 
-const world = WORLDS[0]!
 const NOW = '2026-01-01T00:00:00Z'
-const genId = () => crypto.randomUUID()
-
-function inWorldRun(): RunState {
-  const run = createRunState('run-t', 60, NOW)
-  const res = enterWorld(run, world, { unlocked: true })
-  if (!res.ok) throw new Error(res.error)
-  return res.run
+const origin: OriginDefView = {
+  id: 'o', name: '测试出身', desc: '', money: 50, food: 10, rep: 0,
+  locationId: 'fangshi', destiny: null,
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals()
+function life(): LifeState {
+  return createLife('l1', origin, NOW)
+}
+const meta = createMetaState(NOW)
+meta.memories = [{ id: 'm1', text: '你前世死在赵横刀下', source: 'past_life', createdAt: NOW }]
+
+const noValidate = () => null
+
+describe('Prompt 构建（plan P3）', () => {
+  it('行动演绎：标记、权威状态、继承记忆、玩家输入齐备', () => {
+    const p = buildActPrompt({
+      life: life(),
+      meta,
+      locationName: '坊市',
+      playerInput: '去码头看看',
+      allowGrowth: true,
+    })
+    expect(p.system).toContain('JSON Schema')
+    const user = p.turns[0]?.content ?? ''
+    expect(user).toContain('【输出类型：行动】')
+    expect(user).toContain('【权威状态')
+    expect(user).toContain('坊市')
+    expect(user).toContain('【前世记忆')
+    expect(user).toContain('你前世死在赵横刀下')
+    expect(user).toContain('【玩家输入】去码头看看')
+    expect(user).toContain('【允许成长申报】是')
+  })
+
+  it('事件演绎上下文：事件文本与结算事实', () => {
+    const p = buildActPrompt({
+      life: life(),
+      meta,
+      locationName: '坊市',
+      event: { title: '恶霸收钱', text: '赵横拦路', choiceLabel: '交钱消灾', facts: ['银两 -5'] },
+      playerInput: '恶霸收钱',
+      allowGrowth: false,
+    })
+    const user = p.turns[0]?.content ?? ''
+    expect(user).toContain('【事件】恶霸收钱')
+    expect(user).toContain('【结算事实】')
+    expect(user).toContain('【允许成长申报】否')
+  })
+
+  it('战斗演绎：敌方与结算事实标记（mock 依赖这些标记）', () => {
+    const p = buildBattlePrompt({
+      enemyName: '赵横',
+      turn: 2,
+      round: { facts: ['你使出「太祖长拳」'], playerHp: 24 },
+      life: life(),
+    })
+    const user = p.turns[0]?.content ?? ''
+    expect(user).toContain('【输出类型：战斗】')
+    expect(user).toContain('【敌方】赵横')
+    expect(user).toContain('【结算事实】')
+  })
+
+  it('结局章 prompt', () => {
+    const l = life()
+    l.endType = 'death'
+    l.deathCause = 'battle'
+    const p = buildEndingPrompt({ endingName: '横死刀兵', causeText: '战败身亡', life: l, meta })
+    expect((p.turns[0]?.content ?? '').startsWith('【输出类型：结局】')).toBe(true)
+  })
 })
 
-describe('NarrativeScanner（流式 narrative 提取）', () => {
-  it('跨分片与转义序列', () => {
+describe('NarrativeScanner', () => {
+  it('跨分片与转义', () => {
     const out: string[] = []
     const s = new NarrativeScanner((t) => out.push(t))
-    const full = JSON.stringify({ narrative: '夜色\n深沉，"规则"贴在A墙上。', stateChanges: {} })
-    for (let i = 0; i < full.length; i += 3) {
-      s.feed(full.slice(i, i + 3))
-    }
-    expect(out.join('')).toBe('夜色\n深沉，"规则"贴在A墙上。')
-  })
-
-  it('narrative 前的其它字段不产生增量', () => {
-    const out: string[] = []
-    const s = new NarrativeScanner((t) => out.push(t))
-    s.feed('{"suggestedActions":["看"],"narrative":"正文"}')
-    expect(out.join('')).toBe('正文')
+    const full = JSON.stringify({ narrative: '刀光\n如雪，"铮"的一声。', extra: 1 })
+    for (let i = 0; i < full.length; i += 3) s.feed(full.slice(i, i + 3))
+    expect(out.join('')).toBe('刀光\n如雪，"铮"的一声。')
   })
 })
 
-describe('MockProvider 命令协议', () => {
-  it('默认输入产生普通叙事', async () => {
+describe('行动演绎执行器（plan P3 重试/降级）', () => {
+  it('mock 默认输出可解析', async () => {
     const mock = new MockProvider()
-    const run = inWorldRun()
-    const res = await runTurnAttempt({
-      provider: mock,
-      world,
-      run,
-      meta: createMetaState(NOW),
-      playerInput: '看看四周',
-      timeoutMs: 1000,
+    const res = await runActAttempt({
+      provider: mock, life: life(), meta, locationName: '坊市',
+      playerInput: '看看四周', allowGrowth: true,
+      validateGrowth: noValidate, timeoutMs: 1000,
     })
     expect(res.kind).toBe('ok')
-    if (res.kind !== 'ok') return
-    expect(res.decl.narrative).toContain('看看四周')
-    expect(res.decl.suggestedActions).toHaveLength(2)
   })
 
-  it('/flag 命令申报 flag，通过校验', async () => {
-    const mock = new MockProvider()
-    const run = inWorldRun()
-    const res = await runTurnAttempt({
-      provider: mock,
-      world,
-      run,
-      meta: createMetaState(NOW),
-      playerInput: '/flag read_ruleboard',
-      timeoutMs: 1000,
-    })
-    expect(res.kind).toBe('ok')
-    if (res.kind !== 'ok') return
-    expect(res.decl.flagsAchieved).toEqual(['read_ruleboard'])
-  })
-
-  it('非法 flag：先重试（仍坏）后降级', async () => {
-    const mock = new MockProvider()
-    const run = inWorldRun()
-    const res = await runTurnAttempt({
-      provider: mock,
-      world,
-      run,
-      meta: createMetaState(NOW),
-      playerInput: '/bad-flag',
-      timeoutMs: 1000,
-    })
-    // /bad-flag 每次都返回非法 flag，重试预算 1 次后降级
-    expect(res.kind).toBe('degraded')
-    if (res.kind !== 'degraded') return
-    expect(res.retried).toBe(true)
-    expect(res.reason).toContain('whitelist')
-  })
-
-  it('脚本注入：先坏 JSON 后好 JSON，重试成功（retried=true）', async () => {
-    const mock = new MockProvider()
-    mock.push({ type: 'raw', text: '{"narrative": "截断的' })
-    mock.push({
-      type: 'raw',
-      text: JSON.stringify({ narrative: '四周如常。', suggestedActions: ['观察四周'] }),
-    })
-    const res = await runTurnAttempt({
-      provider: mock,
-      world,
-      run: inWorldRun(),
-      meta: createMetaState(NOW),
-      playerInput: '走',
-      timeoutMs: 1000,
-    })
-    expect(res.kind).toBe('ok')
-    if (res.kind !== 'ok') return
-    expect(res.retried).toBe(true)
-  })
-
-  it('超时错误：不消耗重试预算，立即降级', async () => {
-    const mock = new MockProvider()
-    mock.push({ type: 'error', kind: 'timeout', message: '超时' })
-    const res = await runTurnAttempt({
-      provider: mock,
-      world,
-      run: inWorldRun(),
-      meta: createMetaState(NOW),
-      playerInput: '走',
-      timeoutMs: 1000,
-    })
-    expect(res.kind).toBe('degraded')
-    if (res.kind !== 'degraded') return
-    expect(res.retried).toBe(false)
-    expect(res.reason).toContain('timeout')
-    expect(mock.pending).toBe(0) // 没有第二次调用
-  })
-
-  it('可恢复网络错误：重试一次后成功', async () => {
-    const mock = new MockProvider()
-    mock.push({ type: 'error', kind: 'network', message: '连接重置' })
-    mock.push({
-      type: 'raw',
-      text: JSON.stringify({ narrative: '恢复后成功。' }),
-    })
-    const res = await runTurnAttempt({
-      provider: mock,
-      world,
-      run: inWorldRun(),
-      meta: createMetaState(NOW),
-      playerInput: '走',
-      timeoutMs: 1000,
-    })
-    expect(res.kind).toBe('ok')
-    if (res.kind !== 'ok') return
-    expect(res.retried).toBe(true)
-  })
-
-  it('流式：只透出可解析的 narrative 文本增量（不含原始 JSON 结构）', async () => {
+  it('流式增量：只透出 narrative 文本，不含 JSON 结构', async () => {
     const mock = new MockProvider()
     const deltas: string[] = []
-    await runTurnAttempt({
-      provider: mock,
-      world,
-      run: inWorldRun(),
-      meta: createMetaState(NOW),
-      playerInput: '看',
-      timeoutMs: 1000,
+    await runActAttempt({
+      provider: mock, life: life(), meta, locationName: '坊市',
+      playerInput: '走', allowGrowth: false,
+      validateGrowth: noValidate, timeoutMs: 1000,
       onNarrativeDelta: (t) => deltas.push(t),
     })
     const joined = deltas.join('')
     expect(joined).toContain('（mock 演绎）')
     expect(joined).not.toContain('"narrative"')
-    expect(joined).not.toContain('{')
   })
 
-  it('继承记忆注入 prompt（验收：继承可感知）', () => {
-    const meta = createMetaState(NOW)
-    meta.memories = [
-      { id: 'm1', text: '便利店的第三条规则是假的', source: 'bianlidian', createdAt: NOW },
-    ]
-    const prompt = buildTurnPrompt({ world, run: inWorldRun(), meta, playerInput: '看向冷柜' })
-    const user = prompt.turns[0]?.content ?? ''
-    expect(user).toContain('【继承记忆')
-    expect(user).toContain('便利店的第三条规则是假的')
-  })
-})
-
-describe('prompt 构建（plan P3）', () => {
-  it('包含世界规则、当前幕、可达 flag、权威状态与玩家输入；不含前置未满足的 flag', () => {
-    const run = inWorldRun()
-    const prompt = buildTurnPrompt({
-      world,
-      run,
-      meta: createMetaState(NOW),
-      playerInput: '查看货架',
+  it('成长申报被拒 → 重试一次 → 降级', async () => {
+    const mock = new MockProvider()
+    const res = await runActAttempt({
+      provider: mock, life: life(), meta, locationName: '坊市',
+      playerInput: '/bad-grow', allowGrowth: true,
+      validateGrowth: (l, g) => {
+        const gg = g as { key: string; reasonTag: string }
+        return gg.key === 'int' && gg.reasonTag === 'combat' ? 'growth：类别不匹配' : null
+      },
+      timeoutMs: 1000,
     })
-    expect(prompt.system).toContain('JSON Schema')
-    const user = prompt.turns[0]?.content ?? ''
-    expect(user).toContain('【世界规则】')
-    expect(user).toContain('第一幕')
-    expect(user).toContain('【权威状态')
-    expect(user).toContain('查看货架')
-    // no_shadow_customer 需要 read_ruleboard 前置，不可直接申报
-    expect(user).not.toContain('- no_shadow_customer')
-    expect(user).toContain('- read_ruleboard:')
-    expect(user).toContain('【通关所需 flag（本局主目标）】')
+    expect(res.kind).toBe('degraded')
+    if (res.kind === 'degraded') {
+      expect(res.retried).toBe(true)
+      expect(res.reason).toContain('growth')
+    }
+  })
+
+  it('合法 /grow 成功且带 growth 字段', async () => {
+    const mock = new MockProvider()
+    const res = await runActAttempt({
+      provider: mock, life: life(), meta, locationName: '坊市',
+      playerInput: '/grow atk 练了一趟拳', allowGrowth: true,
+      validateGrowth: noValidate, timeoutMs: 1000,
+    })
+    expect(res.kind).toBe('ok')
+    if (res.kind === 'ok') expect(res.value.growth?.key).toBe('atk')
+  })
+
+  it('超时不重试立即降级', async () => {
+    const mock = new MockProvider()
+    mock.push({ type: 'error', kind: 'timeout', message: '超时' })
+    const res = await runActAttempt({
+      provider: mock, life: life(), meta, locationName: '坊市',
+      playerInput: '走', allowGrowth: false,
+      validateGrowth: noValidate, timeoutMs: 1000,
+    })
+    expect(res.kind).toBe('degraded')
+    if (res.kind === 'degraded') expect(res.retried).toBe(false)
+  })
+
+  it('坏 JSON 重试后成功（retried=true）', async () => {
+    const mock = new MockProvider()
+    mock.push({ type: 'raw', text: '{"narrative": "截断' })
+    mock.push({ type: 'raw', text: JSON.stringify({ narrative: '四周如常。' }) })
+    const res = await runActAttempt({
+      provider: mock, life: life(), meta, locationName: '坊市',
+      playerInput: '/bad-json 再_bad-json', allowGrowth: false,
+      validateGrowth: noValidate, timeoutMs: 1000,
+    })
+    expect(res.kind).toBe('ok')
+    if (res.kind === 'ok') expect(res.retried).toBe(true)
   })
 })
 
-describe('记忆提炼 / 合并 / 摘要（plan P3）', () => {
-  it('extractMemories：清洗去重（schema 已限 5 条 × 50 字 × 非空）', async () => {
+describe('战斗/结局演绎执行器', () => {
+  it('战斗演绎：mock 模板按敌方标记生成', async () => {
+    const mock = new MockProvider()
+    const res = await runBattleAttempt({
+      provider: mock, enemyName: '赵横', turn: 1,
+      round: { facts: ['你普攻造成 2 点伤害'], playerHp: 28 },
+      life: life(), timeoutMs: 1000,
+    })
+    expect(res.kind).toBe('ok')
+    if (res.kind === 'ok') expect(res.value.narrative).toContain('赵横')
+  })
+
+  it('战斗演绎失败 → 降级（服务层用模板战斗日志）', async () => {
+    const mock = new MockProvider()
+    mock.push({ type: 'raw', text: 'nope' })
+    mock.push({ type: 'raw', text: 'still nope' })
+    const res = await runBattleAttempt({
+      provider: mock, enemyName: '赵横', turn: 1,
+      round: { facts: ['事实'], playerHp: 28 },
+      life: life(), timeoutMs: 1000,
+    })
+    expect(res.kind).toBe('degraded')
+  })
+
+  it('结局章：成功与失败', async () => {
+    const mock = new MockProvider()
+    const l = life()
+    l.endType = 'death'
+    l.deathCause = 'starve'
+    const ok = await runEndingChapter({
+      provider: mock, endingName: '饿殍雪夜', causeText: '断粮身亡', life: l, meta, timeoutMs: 1000,
+    })
+    expect(ok.kind).toBe('ok')
+    if (ok.kind === 'ok') expect(ok.value.title.length).toBeGreaterThan(0)
+
+    const bad = new MockProvider()
+    bad.push({ type: 'raw', text: 'x' })
+    bad.push({ type: 'raw', text: 'y' })
+    const fail = await runEndingChapter({
+      provider: bad, endingName: '饿殍雪夜', causeText: '断粮身亡', life: l, meta, timeoutMs: 1000,
+    })
+    expect(fail.kind).toBe('degraded')
+  })
+})
+
+describe('记忆/摘要辅助调用', () => {
+  it('提炼清洗（去重、≤5 条）', async () => {
     const mock = new MockProvider()
     mock.push({
       type: 'raw',
-      text: JSON.stringify({
-        memories: [
-          '便利店的第三条规则是假的',
-          '店长只在凌晨三点出现',
-          '便利店的第三条规则是假的',
-        ],
-      }),
+      text: JSON.stringify({ memories: ['赵横欺软怕硬', '赵横欺软怕硬', '破庙能挡风'] }),
     })
-    const res = await extractMemories(mock, { sourceTitle: '测试', sourceText: '经历', timeoutMs: 1000 })
+    const res = await extractMemories(mock, { sourceTitle: '前世', sourceText: '一生', timeoutMs: 1000 })
     expect(res.ok).toBe(true)
-    if (!res.ok) return
-    expect(res.value).toEqual(['便利店的第三条规则是假的', '店长只在凌晨三点出现'])
+    if (res.ok) expect(res.value).toEqual(['赵横欺软怕硬', '破庙能挡风'])
   })
 
-  it('extractMemories：坏输出返回 ok:false', async () => {
+  it('提炼失败 → ok:false', async () => {
     const mock = new MockProvider()
-    mock.push({ type: 'raw', text: 'not json' })
-    const res = await extractMemories(mock, { sourceTitle: '测试', sourceText: '经历', timeoutMs: 1000 })
+    mock.push({ type: 'raw', text: 'bad' })
+    const res = await extractMemories(mock, { sourceTitle: 'x', sourceText: 'y', timeoutMs: 1000 })
     expect(res.ok).toBe(false)
   })
 
-  it('mergeMemoriesLlm：失败返回 ok:false（调用方走 fallbackMerge）', async () => {
+  it('超限合并：空结果视为失败（走 fallback）', async () => {
     const mock = new MockProvider()
     mock.push({ type: 'raw', text: '{"memories": []}' })
     const res = await mergeMemoriesLlm(mock, { memories: ['a', 'b'], maxTotal: 2, timeoutMs: 1000 })
     expect(res.ok).toBe(false)
   })
 
-  it('summarizeHistory：成功与失败', async () => {
+  it('滚动摘要：成功与失败', async () => {
     const mock = new MockProvider()
-    mock.push({ type: 'raw', text: JSON.stringify({ summary: '主角检查了货架，平安度过最初一小时。' }) })
+    mock.push({ type: 'raw', text: JSON.stringify({ summary: '少年在钱塘城落脚习武。' }) })
     const ok = await summarizeHistory(mock, {
       existingSummary: null,
-      turns: [{ turn: 1, playerInput: '看', narrative: '看了' }],
+      entries: [{ label: '练武', text: '练了一趟拳' }],
       timeoutMs: 1000,
     })
     expect(ok.ok).toBe(true)
-    if (ok.ok) expect(ok.value).toContain('货架')
+    if (ok.ok) expect(ok.value).toContain('钱塘')
 
     const bad = new MockProvider()
     bad.push({ type: 'raw', text: 'oops' })
     const fail = await summarizeHistory(bad, {
       existingSummary: null,
-      turns: [{ turn: 1, playerInput: '看', narrative: '看了' }],
+      entries: [{ label: '练武', text: 'x' }],
       timeoutMs: 1000,
     })
     expect(fail.ok).toBe(false)
   })
 })
 
-// ---- 真实 provider 契约（fetch stub） ----
-
-function jsonRes(obj: unknown): Response {
-  return new Response(JSON.stringify(obj), { status: 200, headers: { 'content-type': 'application/json' } })
-}
-
-describe('DeepSeekProvider 契约（结构化输出）', () => {
-  it('非流式：json_object + prompt schema；解析 content', async () => {
-    const calls: { url: string; init: RequestInit }[] = []
-    vi.stubGlobal(
-      'fetch',
-      async (url: string | URL, init?: RequestInit) => {
-        calls.push({ url: String(url), init: init ?? {} })
-        return jsonRes({
-          choices: [{ message: { content: '{"narrative":"ok"}' } }],
-          usage: { prompt_tokens: 11, completion_tokens: 7 },
-        })
-      }
-    )
-    const p = new DeepSeekProvider({ apiKey: 'k', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' })
-    const res = await p.generate({
-      system: 's',
-      turns: [{ role: 'user', content: 'u' }],
-      jsonSchema: { type: 'object' },
-      maxTokens: 100,
-    })
-    expect(res.text).toBe('{"narrative":"ok"}')
-    expect(res.usage).toEqual({ promptTokens: 11, completionTokens: 7 })
-    const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>
-    expect(calls[0]?.url).toBe('https://api.deepseek.com/chat/completions')
-    expect(body.response_format).toEqual({ type: 'json_object' })
-    expect(body.model).toBe('deepseek-chat')
-  })
-
-  it('流式：解析 SSE data: 行并聚合 content', async () => {
-    const sse = [
-      'data: {"choices":[{"delta":{"content":"{\\"narr"}}]}',
-      '',
-      'data: {"choices":[{"delta":{"content":"ative\\":\\"hi\\"}"}}]}',
-      '',
-      'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}',
-      '',
-      'data: [DONE]',
-      '',
-    ].join('\n')
-    vi.stubGlobal('fetch', async () => new Response(sse, { status: 200 }))
-    const p = new DeepSeekProvider({ apiKey: 'k', baseUrl: 'https://x', model: 'm' })
-    const deltas: string[] = []
-    const res = await p.generate(
-      { system: 's', turns: [{ role: 'user', content: 'u' }], maxTokens: 10 },
-      { onDelta: (t) => deltas.push(t) }
-    )
-    expect(JSON.parse(res.text)).toEqual({ narrative: 'hi' })
-    expect(deltas.join('')).toBe(res.text)
-    expect(res.usage).toEqual({ promptTokens: 3, completionTokens: 4 })
-  })
-
-  it('HTTP 500 可恢复，401 不可恢复', async () => {
-    const p = new DeepSeekProvider({ apiKey: 'k', baseUrl: 'https://x', model: 'm' })
-    vi.stubGlobal('fetch', async () => new Response('boom', { status: 500 }))
-    await expect(p.generate({ system: 's', turns: [], maxTokens: 1 })).rejects.toMatchObject({
-      recoverable: true,
-    })
-    vi.stubGlobal('fetch', async () => new Response('no', { status: 401 }))
-    await expect(p.generate({ system: 's', turns: [], maxTokens: 1 })).rejects.toMatchObject({
-      recoverable: false,
-      kind: 'http',
-    })
+describe('降级文案常量', () => {
+  it('确定性环境叙事存在', () => {
+    expect(DEGRADED_NARRATIVE.length).toBeGreaterThan(0)
   })
 })
 
-describe('ClaudeProvider 契约（工具调用结构化输出）', () => {
-  it('非流式：强制工具选择；从 tool_use 块提取输入', async () => {
-    const calls: { url: string; init: RequestInit }[] = []
-    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
-      calls.push({ url: String(url), init: init ?? {} })
-      return jsonRes({
-        content: [{ type: 'tool_use', name: 'turn_output', input: { narrative: 'cl' } }],
-        usage: { input_tokens: 9, output_tokens: 5 },
-      })
-    })
-    const p = new ClaudeProvider({ apiKey: 'k', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-5' })
-    const res = await p.generate({
-      system: 's',
-      turns: [{ role: 'user', content: 'u' }],
-      jsonSchema: { type: 'object' },
-      toolName: 'turn_output',
-      maxTokens: 100,
-    })
-    expect(JSON.parse(res.text)).toEqual({ narrative: 'cl' })
-    const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>
-    expect(calls[0]?.url).toBe('https://api.anthropic.com/v1/messages')
-    expect(body.tool_choice).toEqual({ type: 'tool', name: 'turn_output' })
-    expect((res as { text: string }).text).toBeTruthy()
+describe('人物摘要协议', () => {
+  it('拒绝超长摘要并按既有重试预算恢复', async () => {
+    const provider = new MockProvider()
+    provider.push({ type: 'raw', text: JSON.stringify({ narrative: '你遇见阿舟。', characters: [{ name: '阿舟', gender: '男', organization: '漕帮', hobby: '', summary: '长'.repeat(61), relation: '' }] }) })
+    provider.push({ type: 'raw', text: JSON.stringify({ narrative: '你遇见阿舟。', characters: [{ name: '阿舟', gender: '未详', organization: '', hobby: '', summary: '码头相识。', relation: '相识' }] }) })
+    const result = await runActAttempt({ provider, life: life(), meta, locationName: '码头', playerInput: '走走', allowGrowth: false, validateGrowth: noValidate, timeoutMs: 1000 })
+    expect(result.kind).toBe('ok')
+    if (result.kind === 'ok') {
+      expect(result.retried).toBe(true)
+      expect(result.value.characters?.[0]?.summary).toBe('码头相识。')
+    }
   })
+})
 
-  it('流式：聚合 input_json_delta', async () => {
-    const sse = [
-      'event: message_start',
-      'data: {"type":"message_start","message":{"usage":{"input_tokens":8}}}',
-      '',
-      'event: content_block_delta',
-      'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\\"narrative\\":"}}',
-      '',
-      'event: content_block_delta',
-      'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"\\"x\\"}"}}',
-      '',
-      'event: message_delta',
-      'data: {"type":"message_delta","usage":{"output_tokens":6}}',
-      '',
-    ].join('\n')
-    vi.stubGlobal('fetch', async () => new Response(sse, { status: 200 }))
-    const p = new ClaudeProvider({ apiKey: 'k', baseUrl: 'https://x', model: 'm' })
-    const res = await p.generate(
-      { system: 's', turns: [{ role: 'user', content: 'u' }], maxTokens: 10 },
-      { onDelta: () => {} }
-    )
-    expect(JSON.parse(res.text)).toEqual({ narrative: 'x' })
-    expect(res.usage).toEqual({ promptTokens: 8, completionTokens: 6 })
+it('旧人物整理在系统提示中提供完整 schema，兼容 JSON-only provider', async () => {
+  const { runCharacterExtraction } = await import('../src/executor.js')
+  const { CharacterExtractionSchema } = await import('../src/schema.js')
+  const provider = new MockProvider()
+  const original = provider.generate.bind(provider)
+  let captured = ''
+  provider.generate = async (request, hooks) => {
+    captured = request.system
+    return original(request, hooks)
+  }
+  const result = await runCharacterExtraction(provider, life(), 1000)
+  expect(captured).toContain('"required"')
+  expect(captured).toContain('"characters"')
+  expect(captured).toContain('"gender"')
+  expect(result.kind).toBe('ok')
+  expect(CharacterExtractionSchema.safeParse({ characters: [] }).success).toBe(true)
+})
+
+describe('叙事时间锚点', () => {
+  it('午时反馈明确区分行动前后及历史夜晚', () => {
+    const l = life()
+    l.day = 1; l.slot = 1
+    l.history.push({ seq: 1, day: 0, slot: 3, kind: 'action', label: '歇息', text: '深夜你在月下歇息。', degraded: false })
+    const p = buildActPrompt({ life: l, meta, locationName: '坊市', playerInput: '走走', allowGrowth: false, timeBefore: { day: 1, slot: 0 } })
+    const user = p.turns[0]!.content
+    expect(user).toContain('时辰：午')
+    expect(user).toContain('行动开始：第一年 春月二日 · 晨')
+    expect(user).toContain('反馈结束：第一年 春月二日 · 午')
+    expect(user).toContain('系统实际推进 1 个时段')
+    expect(user).toContain('[第一年 春月一日 · 夜]')
+    expect(p.system).toContain('不能自行推进至翌日')
+  })
+  it('无时间消耗的事件不允许过夜', () => {
+    const l = life(); l.slot = 3
+    const p = buildActPrompt({ life: l, meta, locationName: '坊市', playerInput: '用饭', allowGrowth: false, timeBefore: { day: 0, slot: 3 } })
+    expect(p.turns[0]!.content).toContain('本次未推进时间')
+    expect(p.turns[0]!.content).toContain('时辰：夜')
+  })
+  it('跨日、换季按引擎时间，战斗与结局也接收锚点', () => {
+    const l = life(); l.day = 90; l.slot = 0
+    const p = buildActPrompt({ life: l, meta, locationName: '坊市', playerInput: '住店', allowGrowth: false, timeBefore: { day: 89, slot: 3 } })
+    expect(p.turns[0]!.content).toContain('季节：夏')
+    expect(p.turns[0]!.content).toContain('系统实际推进 1 个时段')
+    expect(buildBattlePrompt({ life: l, enemyName: '赵横', turn: 1, round: { facts: [], playerHp: 30 } }).turns[0]!.content).toContain('时辰：晨')
+    expect(buildEndingPrompt({ life: l, meta, endingName: '终章', causeText: '' }).turns[0]!.content).toContain('季节：夏')
   })
 })

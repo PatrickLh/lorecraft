@@ -1,95 +1,90 @@
-# LoreCraft
+# LoreCraft · 江湖一生（v2.0）
 
-> **文字冒险 + LLM 动态叙事 + 无限流世界穿梭 + Roguelite 死亡继承**
+> **武侠生存模拟 × LLM 动态叙事 × 代码权威战斗 × 无限轮回**
 
-个人原型，验证一个核心问题：「LLM 动态叙事 + 代码权威状态机」能否支撑一个**死亡有痛感、继承有感知**的无限流 Roguelite。
+你是一介小虾米，在钱塘城的市井江湖里讨生活、习武、结怨、扬名。死亡或善终之后，武学与记忆随魂魄转世，落入下一世。同一座城，不同的一生。
 
-- 需求文档：`docs/v1.0/requirement.md`
-- 执行计划：`docs/v1.0/plan.md`
-- 验收记录：`docs/v1.0/acceptance.md`
+- 需求文档：`docs/v2.0/requirement.md`
+- 执行计划：`docs/v2.0/plan.md`
+- 验收记录：`docs/v2.0/acceptance.md`
+- v1.0 文档存档：`docs/v1.0/`（**v1.0 存档不保留**，数据库迁移 v2 自动重建游戏表）
 
-## 架构
+## 核心机制一览
 
-```
-apps/
-  web/        Vue3 + Vite —— 枢纽、世界界面、叙事流、状态侧栏
-  server/     Node + Hono + SQLite —— 权威状态、回合编排、事务、幂等、SSE
-packages/
-  core/       状态类型、常量表、纯 reducer、三关校验、继承与记忆规则（前后端共享）
-  worlddata/  三个手写世界剧本（规则怪谈 / 修仙 / 武侠）+ 数据完整性检查
-  llm/        provider 抽象（mock / DeepSeek / Claude）、prompt、结构化输出、流式扫描、记忆提炼、摘要
-```
-
-同语言 monorepo（pnpm workspace），游戏状态机 / LLM schema / 世界库结构前后端 import 同一份类型。
+- **六维数值**：生命/真气/武力/防御/智力/敏捷——事件驱动成长（比武胜→武力，解谜→智力）
+- **代码权威战斗**：伤害 = 武力 × 武学倍率 × 等级系数 − 防御；敏捷定闪避/暴击；真气驱动武学；LLM 只演绎不判数值
+- **26 门手写武学**：三流/二流/一流/绝学四档，入门/小成/大成三等级，门槛+机缘习得，跨世保留
+- **生存模拟**：银两温饱、声望（侠名/凶名）、四势力关系、12 名关键 NPC 恩怨
+- **时间**：一日四时辰，一年四季 360 天，年龄推进；60 岁始衰，70 岁可善终
+- **结局**：达成型（武功天下第一/武林盟主/魔道巨擘…）静默判定 + 选择型（退隐/远走海外/皈依佛前）主动触发
+- **轮回**：死亡或结局后提炼记忆（≤20 条）、武学带入、解锁新出身
 
 ## 快速开始
 
 ```bash
 pnpm install
-cp .env.example .env        # 默认 LLM_PROVIDER=mock，无需 API key 即可玩
-pnpm dev:server             # http://127.0.0.1:8787
+cp .env.example .env        # 默认 LLM_PROVIDER=mock，无需 API key
+pnpm dev:server             # http://127.0.0.1:8787（自动加载仓库根目录 .env）
 pnpm dev:web                # http://localhost:5173（/api 代理到 8787）
 ```
 
-浏览器打开 http://localhost:5173 。存档为 SQLite，默认 `./data/lorecraft.db`（可用 `SQLITE_PATH` 改）。
-
-> 服务端启动时自动从 **cwd 向上查找 `.env`** 并加载（仓库根目录放一份即可），已存在的环境变量优先、不被覆盖。启动日志会打印 `[lorecraft] loaded env from …`。
-
-> 注意：Vite 默认只监听 `localhost`（IPv6），请用 `http://localhost:5173` 而非 `127.0.0.1` 访问。
+浏览器打开 **http://localhost:5173**（Vite 默认只监听 localhost/IPv6，勿用 127.0.0.1 访问）。
 
 ### 常用命令
 
 ```bash
-pnpm typecheck   # 全工作区类型检查
-pnpm test        # 全工作区测试（vitest）
+pnpm typecheck   # 全工作区类型检查（web 用 vue-tsc）
+pnpm test        # 全工作区测试（vitest，60 项）
 pnpm build       # 构建前端
 pnpm check       # typecheck + test
 ```
 
 ## LLM 配置
 
-`.env` 中 `LLM_PROVIDER` 三选一：
+`.env` 中 `LLM_PROVIDER` 三选一：`mock`（默认）/ `deepseek` / `claude`。切换后重启 server。
+key 只存服务端 `.env`。DeepSeek 走 OpenAI 兼容 `json_object`；Claude 走 Messages API 强制工具调用。
 
-| 值 | 说明 |
-|----|------|
-| `mock`（默认） | 无需 key；支持斜杠命令联调（见下） |
-| `deepseek` | 需 `DEEPSEEK_API_KEY`；OpenAI 兼容接口，`json_object` 结构化输出 |
-| `claude` | 需 `ANTHROPIC_API_KEY`；Messages API 强制工具调用 |
-
-切换后重启 `pnpm dev:server`。key 只存在服务端 `.env`，前端永不接触。
-
-### Mock 联调命令
-
-`LLM_PROVIDER=mock` 时，在行动输入框里可用：
+### Mock 联调命令（自由输入框里用）
 
 ```
-/flag read_ruleboard        申报达成 flag
-/win                        申报全部通关 flag（前置不满足会被系统拒绝）
-/dmg con 3  /heal mind 2    属性伤害 / 恢复（±3/回合，代码校验）
-/life -5                    寿命事件增减（±10/回合）
-/gain 手电筒|照亮黑暗        获得物品
-/lose 手电筒                按名称失去物品（重名会被拒绝）
-/tag 中毒  /untag 中毒      增删状态标记
-/bad-json                   注入非法 JSON（触发重试→环境回合降级）
-/bad-flag                   注入非法 flag（触发重试→降级）
+/grow atk          申报 1 点武力成长（合法标签自动匹配）
+/bad-grow          注入类别不匹配的成长申报（触发重试→环境回合降级）
+/bad-json          注入非法 JSON（同上）
 ```
 
-## 存档管理
+服务端日志会打印 provider 与模型；每局 token 消耗记入 `usage_logs` 表。
 
-- 位置：`SQLITE_PATH`（默认 `./data/lorecraft.db`），WAL 模式
-- 备份：停服后复制 db 文件即可
-- 重置：停服后删除 `data/` 目录，下次启动自动建库
-- 单机单活跃局：死亡或完成全部世界后才能开新局；刷新页面自动恢复当前局
+## 存档
 
-## 设计要点（详见需求文档）
+- SQLite：`SQLITE_PATH`（默认 `./data/lorecraft.db`），WAL 模式；备份=复制文件，重置=删 `data/`
+- 单活跃一世；行动/战斗以 `requestId` 幂等、版本号防并发；刷新自动恢复
+- 历世履历存于 `meta.history`，前端「轮回历史」页查看
 
-- **寿命制**：全局回合池，每回合 -1，归零即死；通关 +15；首次永久通关上限 +5
-- **代码权威**：LLM 每回合通过大 schema 申报状态变更，三关校验（范围/白名单/合法性），失败重试一次后降级为环境回合；LLM 无判死权
-- **死亡继承**：记忆（≤20 条，LLM 提炼）+ 寿命上限 + 世界解锁，注入后续局 prompt
-- **一次性重试预算**：schema/范围/白名单/合法性与可恢复网络错误共用；超时直接降级
+## 架构
 
-## 已知限制（v1.0）
+```
+apps/web        Vue3：出身选择 / 一世主界面（行动菜单+事件抉择+演绎流+侧栏）/ 战斗面板 / 结局章 / 轮回历史
+apps/server     Hono + SQLite：权威状态、行动与战斗编排、事务原子提交、requestId 幂等、SSE
+packages/core   六维/日历/战斗引擎/三层成长/事件抽取/结局条件表/轮回结算（纯函数，前后端共享）
+packages/worlddata   钱塘城世界库：5 地点/4 势力/12 NPC/26 武学/8 敌人/6 出身/3 身世线/10+4 结局/29 事件
+packages/llm    provider 抽象（mock/DeepSeek/Claude）、四类演绎 schema、流式扫描、记忆提炼/摘要
+```
 
-- DeepSeek / Claude 仅有 fetch stub 契约测试；**尚未用真实 key 冒烟**（无 key 环境）
-- 真实模型试玩（叙事质量、flag 节奏、数值平衡）待执行，见 `docs/v1.0/acceptance.md`
-- 世界内幕转换提示为系统消息，不做额外 LLM 转场调用（计划如此）
+## 已知限制（v2.0 原型）
+
+- 事件库首批 20 条沙箱 + 9 条身世链（目标 50，见 acceptance.md）
+- DeepSeek / Claude 仅有 fetch stub 契约测试，**尚未用真实 key 冒烟**
+- 战斗数值平衡由 120 场模拟器分布测试兜底，仍需真实试玩调参
+- 敌人不使用武学（仅有行为倾向）；装备/丹药/暗器等留 v3
+
+### 游玩界面与人物册
+
+- 白灰水墨界面；游玩时隐藏主导航，只保留返回主页，主要数值集中在顶部。
+- 武学、恩怨和人物图谱默认显示数量，点击进入江湖册；人物按所属组织分组，支持搜索、分页与查看简要档案。
+- 行动叙事可附带最多 5 位人物摘要，保存在当前一世；性别、所属、爱好未知时不猜测。每份经历摘要最多 60 字，覆盖更新而非不断追加，最多保存 100 位人物。
+- 旧存档可点击“整理已有经历”，额外调用模型，从已有摘要和最近最多 12000 字经历补记最多 20 位人物；不推进时间、不改属性或数值恩怨。失败可重试。
+- 图谱展示玩家与人物的联系以及组织归属；尚不推断人物之间未被系统记录的恩怨，也不合并同名异人。
+
+### 时间一致性
+
+行动演绎收到引擎给出的行动开始时间、结算结束时间、实际推进时段和当前季节/时辰。经过只允许发生在该区间，反馈结尾与推荐行动以结算后的当前时间为准；历史文本带原时间标签。战斗与结局也接收当前时间锚点。预设夜间事件只在夜时辰触发，待抉择事件必须先处理，防止事件被其它行动拖入错误时段。住店按当前时辰消耗剩余时段，到翌日清晨结束。
