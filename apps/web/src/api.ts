@@ -36,6 +36,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getOpportunities: (id: string): Promise<{ events: { id: string; title: string; text: string }[] }> => req(`/api/lives/${id}/opportunities`),
   getMeta: (): Promise<MetaInfo> => req<MetaInfo>('/api/meta'),
   getCatalog: (): Promise<WorldCatalog> => req<WorldCatalog>('/api/catalog'),
   getHistory: (): Promise<MetaInfo['meta']['history']> =>

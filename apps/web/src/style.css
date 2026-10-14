@@ -841,3 +841,12 @@ button, input[type=text] { border-radius: 7px; }
 }
 
 .mobile-status-date { margin: 0 0 6px; font-size: 13px; line-height: 1.4; color: var(--text); }
+.exploration-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.exploration-toolbar > button:first-child { padding: 6px 10px; font-size: 14px; }
+.exploration-toolbar .actions-toggle { flex: 1; min-width: 80px; width: auto; margin-bottom: 0; }
+.travel-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.opportunity-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.opportunity-list .person-detail { margin-top: 0; }
+.opportunity-list h3 { font-size: 16px; }
+.opportunity-list p { font-size: 14px; }
+.playing-shell .side-pane.collapsed .exploration-toolbar { margin-bottom: 0; }

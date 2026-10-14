@@ -2,6 +2,7 @@
  * v2.0 游戏编排服务（plan P2）：
  * 权威状态在服务端；LLM 演绎在事务外；requestId 幂等 + 版本校验；事务原子提交。
  */
+import { availableEvents, resolveExplorationInput } from './exploration.js'
 import type Database from 'better-sqlite3'
 import {
   advanceTime,
@@ -78,6 +79,8 @@ export type ActRequest =
   | { kind: 'action'; actionId: string }
   | { kind: 'free'; input: string }
   | { kind: 'event_choice'; index: number }
+  | { kind: 'travel'; locationId: string }
+  | { kind: 'seek_event'; eventId: string }
   | { kind: 'ending'; endingId: string }
 
 export interface EndInfo {
@@ -293,6 +296,10 @@ export class GameService {
     } catch (e) { this.repos.releaseRequest(lifeId, requestId); throw e }
   }
 
+  opportunities(lifeId: string) {
+    return availableEvents(this.getLife(lifeId)).map(event => ({ id: event.id, title: event.title, text: event.text }))
+  }
+
   // ---- 行动 ----
 
   async submitAct(
@@ -336,9 +343,10 @@ export class GameService {
       throw new HttpError(409, 'pending_event', '请先完成当前事件的抉择，再进行其他行动')
     }
 
+    const originalInput = act.kind === 'free' ? act.input.trim() : null
+    if (originalInput) act = resolveExplorationInput(originalInput) ?? act
     const meta = this.ensureMeta()
     const discount = reqDiscountForLives(meta.livesCount)
-    const locationName = getLocation(lifeRow.data.locationId)?.name ?? '钱塘城'
 
     let working = structuredCloneLife(lifeRow.data)
     let facts: string[] = []
@@ -358,7 +366,9 @@ export class GameService {
         const action = ACTIONS.find((a) => a.id === act.actionId)
         if (!action) throw new HttpError(404, 'action_not_found', `行动不存在：${act.actionId}`)
         historyLabel = action.label
-        playerInput = action.label
+        playerInput = originalInput ?? action.label
+        if (action.id === 'zuogong') working.locationId = 'matou'
+        if (action.id === 'fangshi') working.locationId = 'fangshi'
         const res =
           action.id === 'guoyiri'
             ? restOfDay(working, this.rng)
@@ -379,7 +389,32 @@ export class GameService {
         historyLabel = '自由行动'
         freeInput = act.input.trim()
         playerInput = freeInput
-        advanceTime(working, 1)
+        const tick = advanceTime(working, 1)
+        if (tick.diedOfStarve) markLifeEnd(working, 'death', { deathCause: 'starve' })
+        else if (tick.goodDeath) markLifeEnd(working, 'ending', { endingId: 'shan_zhong' })
+      } else if (act.kind === 'travel') {
+        const location = getLocation(act.locationId)
+        if (!location) throw new HttpError(404, 'location_not_found', '此处不在当前江湖地图中')
+        if (location.id === working.locationId) throw new HttpError(400, 'already_here', '你已在此处，可通过附近机缘寻找事件')
+        working.locationId = location.id
+        historyLabel = `前往${location.name}`
+        playerInput = originalInput ?? historyLabel
+        const tick = advanceTime(working, 1)
+        facts = [`你来到${location.name}`]
+        if (tick.diedOfStarve) markLifeEnd(working, 'death', { deathCause: 'starve' })
+        else if (tick.goodDeath) markLifeEnd(working, 'ending', { endingId: 'shan_zhong' })
+        if (working.phase === 'alive') {
+          const event = pickEvent(working, EVENTS, this.rng)
+          if (event) { working.pendingEventId = event.id; markEventSeen(working, event.id) }
+        }
+      } else if (act.kind === 'seek_event') {
+        const event = availableEvents(working).find(e => e.id === act.eventId)
+        if (!event) throw new HttpError(409, 'event_unavailable', '当前条件或冷却不满足，请查看附近机缘；其他地点的事件需先前往该地点')
+        historyLabel = `寻找机缘：${event.title}`
+        playerInput = originalInput ?? historyLabel
+        working.pendingEventId = event.id
+        markEventSeen(working, event.id)
+        facts = ['发现事件，尚未选择选项，不发放任何奖励']
       } else if (act.kind === 'event_choice') {
         const ev = EVENTS.find((e) => e.id === working.pendingEventId)
         if (!ev) throw new HttpError(409, 'no_pending_event', '当前没有待抉择的事件')
@@ -435,14 +470,15 @@ export class GameService {
           life: working,
           timeBefore: { day: lifeRow.data.day, slot: lifeRow.data.slot },
           meta,
-          locationName,
+          locationName: getLocation(working.locationId)?.name ?? '钱塘城',
+          pendingEvent: this.presentEvent(working),
           event: eventCtx,
-          facts: act.kind === 'action' ? facts : act.kind === 'free' ? undefined : facts,
+          facts,
           playerInput:
             act.kind === 'free'
               ? freeInput
               : historyLabel + (facts.length > 0 ? `（${facts.join('；')}）` : ''),
-          allowGrowth: act.kind === 'free',
+          allowGrowth: act.kind === 'free' && !working.pendingEventId,
           validateGrowth: (life, growth) => validateGrowthDecl(life, growth),
           timeoutMs: this.config.llmTimeoutMs,
           onNarrativeDelta: hooks?.onDelta,

@@ -24,7 +24,7 @@ function setup(rng?: Rng): Setup {
   const repos = new Repos(db)
   const mock = new MockProvider()
   const config = { ...loadConfig({}), sqlitePath: ':memory:' }
-  const service = new GameService({ db, config, provider: mock, repos, rng })
+  const service = new GameService({ db, config, provider: mock, repos, rng: rng ?? (() => .5) })
   const app = createApp(service)
   return { db, repos, mock, service, app }
 }
@@ -374,13 +374,13 @@ describe('人物摘要存档', () => {
           { name: '不存在的人', gender: '未详', organization: '', hobby: '', summary: '', relation: '' },
         ],
       }) })
-      const result = await act(s, life.id, life.version, { kind: 'free', input: '到码头看看' }, 'people-1')
+      const result = await act(s, life.id, life.version, { kind: 'free', input: '在码头看看' }, 'people-1')
       expect(result.life.characterNotes?.['阿舟']?.hobby).toBe('听书')
       expect(result.life.characterNotes?.['不存在的人']).toBeUndefined()
       expect(result.life.npcs).toEqual(beforeNpcs)
       const restored = s.service.getLife(life.id)
       expect(restored.characterNotes).toEqual(result.life.characterNotes)
-      const replay = await act(s, life.id, life.version, { kind: 'free', input: '到码头看看' }, 'people-1')
+      const replay = await act(s, life.id, life.version, { kind: 'free', input: '在码头看看' }, 'people-1')
       expect(replay.life.characterNotes).toEqual(result.life.characterNotes)
       expect(replay.life.version).toBe(result.life.version)
       s.mock.push({ type: 'raw', text: JSON.stringify({ narrative: '阿舟又来与你打招呼。', characters: [{ name: '阿舟', gender: '未详', organization: '', hobby: '', summary: '再次在码头相逢。', relation: '' }] }) })
@@ -463,6 +463,66 @@ describe('回合时间与事件阶段', () => {
       const resolved = await act(s, life.id, pending.version, { kind: 'event_choice', index: 2 })
       expect(resolved.life.pendingEventId).toBeNull()
       expect(prompt).toContain('反馈结束：第一年 春月二日 · 午')
+    } finally { s.db.close() }
+  })
+})
+
+describe('自由文本进入具体事件', () => {
+  it('坊市闲逛实际前往坊市，事件只能来自该地点', async () => {
+    const s = setup(() => 0)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      const result = await act(s, life.id, life.version, { kind: 'action', actionId: 'fangshi' })
+      expect(result.life.locationId).toBe('fangshi')
+      expect(result.event?.id).toBe('e_baofei')
+    } finally { s.db.close() }
+  })
+  it('自由叙述不被随机事件打断，移动后触发事件且刷新保持抉择', async () => {
+    const s = setup(() => 0)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      const result = await act(s, life.id, life.version, { kind: 'free', input: '在破庙附近打听消息' })
+      expect(result.event).toBeNull()
+      const moved = await act(s, life.id, result.life.version, { kind: 'travel', locationId: 'fangshi' })
+      expect(moved.event).not.toBeNull()
+      expect(moved.event?.choices.length).toBeGreaterThan(0)
+      const restored = await s.app.request('/api/lives/active')
+      expect((await restored.json() as { event: { id: string } }).event.id).toBe(moved.event?.id)
+    } finally { s.db.close() }
+  })
+  it('文本移动更新地点；明确寻找事件遵守条件且不提前发放奖励', async () => {
+    const s = setup(() => .5)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      const moved = await act(s, life.id, life.version, { kind: 'free', input: '去坊市' })
+      expect(moved.life.locationId).toBe('fangshi')
+      // 移动途中遇到的事件先处理，之后再主动寻找指定机缘。
+      const ready = s.service.getLife(life.id)
+      ready.pendingEventId = null
+      ready.eventCooldowns = {}
+      s.repos.saveLifeDataOnly(ready, NOW)
+      expect(s.service.opportunities(life.id).some(e => e.id === 'e_yaopu_banggong')).toBe(true)
+      const entered = await act(s, life.id, ready.version, { kind: 'free', input: '回春堂帮工' })
+      expect(entered.event?.id).toBe('e_yaopu_banggong')
+      expect(entered.life.money).toBe(ready.money)
+      expect(entered.life.food).toBe(ready.food)
+      expect(entered.life.slot).toBe(ready.slot)
+      const outcome = await act(s, life.id, entered.life.version, { kind: 'event_choice', index: 0 })
+      expect(outcome.life.money).toBe(ready.money + 3)
+      expect(outcome.life.food).toBeGreaterThan(ready.food)
+      expect(s.service.opportunities(life.id).some(e => e.id === 'e_yaopu_banggong')).toBe(false)
+    } finally { s.db.close() }
+  })
+  it('明确吃饭文字走规则结算，不能在错误地点强行进入特定事件', async () => {
+    const s = setup(() => .5)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      await expect(act(s, life.id, life.version, { kind: 'seek_event', eventId: 'e_yaopu_banggong' })).rejects.toMatchObject({ code: 'event_unavailable' })
+      const eaten = await act(s, life.id, life.version, { kind: 'free', input: '我要吃饭' })
+      expect(eaten.life.food).toBe(10)
+      expect(eaten.life.money).toBe(life.money - 1)
+      expect(eaten.life.slot).toBe(life.slot)
+      expect(eaten.life.history.at(-1)?.playerInput).toBe('我要吃饭')
     } finally { s.db.close() }
   })
 })

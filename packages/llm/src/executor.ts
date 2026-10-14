@@ -126,6 +126,7 @@ async function attempt<T>(
 // ---- 行动演绎 ----
 
 export interface ActAttemptArgs {
+  pendingEvent?: { title: string; text: string } | null
   timeBefore?: Pick<LifeState, 'day' | 'slot'>
   provider: LlmProvider
   life: LifeState
@@ -154,6 +155,7 @@ export async function runActAttempt(args: ActAttemptArgs): Promise<ActAttempt> {
   const prompt = buildActPrompt({
     life: args.life,
     timeBefore: args.timeBefore,
+    pendingEvent: args.pendingEvent,
     meta: args.meta,
     locationName: args.locationName,
     event: args.event,

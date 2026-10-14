@@ -38,6 +38,8 @@ export function createApp(service: GameService): Hono {
     })
   })
 
+  app.get('/api/lives/:id/opportunities', (c) => c.json({ events: service.opportunities(c.req.param('id')) }))
+
   app.get('/api/lives/:id', (c) => {
     const life = service.getLife(c.req.param('id'))
     return c.json({

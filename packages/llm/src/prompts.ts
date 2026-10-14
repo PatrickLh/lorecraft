@@ -53,6 +53,7 @@ const ACT_SYSTEM = `${PERSONA}
 ${JSON.stringify(actJsonSchema())}`
 
 export interface ActPromptArgs {
+  pendingEvent?: { title: string; text: string } | null
   timeBefore?: GameTime
   life: LifeState
   meta: MetaState
@@ -78,6 +79,8 @@ export function buildActPrompt(args: ActPromptArgs): { system: string; turns: Pr
       `银两 ${life.money} 两｜温饱 ${life.food}/10｜声望 ${life.rep}`
   )
   if (life.characterNotes) sections.push(`【本世人物档案（保持身份一致）】${JSON.stringify(Object.values(life.characterNotes).slice(-30))}`)
+  if (args.pendingEvent) sections.push(`【已触发的待抉择事件】${args.pendingEvent.title}\n${args.pendingEvent.text}\n以该事件作为本次叙事的落点，从当前行动自然过渡到相遇；不得先进入别的地点或开始另一段剧情再插入该事件。只铺垫相遇与悬念，不替玩家选选项，不虚构已领取报酬、已吃饭或已打完战斗；等待玩家通过事件按钮选择。`)
+  sections.push('场景地点以权威状态为准，尚未被规则结算的跨地区移动只能是计划，不能写成已到达。只有结算事实明确给出的银两、温饱和属性变化才算发生；不得将未结算的吃饭、领工钱写成已完成的结果。')
   const learned = life.martials.map((m) => m.id).join('、')
   sections.push(`【已学武学】${learned || '无'}`)
   const npcEntries = Object.entries(life.npcs)

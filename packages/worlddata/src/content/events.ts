@@ -106,7 +106,7 @@ export const EVENTS: EventDefView[] = [
     cond: { location: 'fangshi' },
     text: '回春堂门口贴了张红纸：招抓药学徒一名，管一顿饭。白露掌柜在柜台后拨着算盘。',
     choices: [
-      { label: '老老实实干一天', outcome: { money: 3, food: 2, attrs: { int: 1 }, npcs: { bai_lu: 5 }, text: '碾了一天药，白露教你认了几味药材，晚饭在铺子里解决的。' } },
+      { label: '认真帮工，换取工钱与饭食', outcome: { money: 3, food: 2, attrs: { int: 1 }, npcs: { bai_lu: 5 }, text: '你碾好药，白露教你认了几味药材，还在铺子里吃了顿饭。' } },
       { label: '顺手顺两味贵药', randomOutcomes: [
         { weight: 5, outcome: { money: 12, npcs: { bai_lu: -15 }, rep: -3, text: '得手了。可你总觉得柜后那双眼睛在看你。' } },
         { weight: 5, outcome: { npcs: { bai_lu: -20 }, rep: -5, hp: -2, text: '被当场拿住，挨了顿好打，撵出了铺子。' } },
@@ -308,7 +308,7 @@ export const EVENTS: EventDefView[] = [
     id: 'dest_jiachuan_2',
     title: '野庙石匣',
     weight: 20,
-    cond: { destiny: 'jiachuan_miji', flag: 'd_jiachuan_1', noFlag: 'd_jiachuan_2' },
+    cond: { location: 'yelin', destiny: 'jiachuan_miji', flag: 'd_jiachuan_1', noFlag: 'd_jiachuan_2' },
     text: '你按残页所指引到了野林深处的破庙。神龛之后果然有个石匣，匣面刻着与你贴身残页相同的纹路。',
     choices: [
       { label: '按纹路旋转开启', outcome: { flags: ['d_jiachuan_2'], learn: { id: 'zhanzhuang_gong' }, attrs: { maxHp: 3 }, hp: 3, text: '石匣里是一册内功总纲和一瓶丹丸。你依照总纲试着吐纳，气血竟壮实了几分。总纲扉页写着：真经在上，非大智慧大毅力者不可习。' } },
@@ -319,7 +319,7 @@ export const EVENTS: EventDefView[] = [
     id: 'dest_jiachuan_3',
     title: '太玄真经',
     weight: 20,
-    cond: { destiny: 'jiachuan_miji', flag: 'd_jiachuan_2', noFlag: 'd_jiachuan_3' },
+    cond: { location: 'yelin', destiny: 'jiachuan_miji', flag: 'd_jiachuan_2', noFlag: 'd_jiachuan_3' },
     text: '石匣中的《太玄真经》摊在你面前，石壁上的古篆你如今已能识得七成。这是爹娘拼死留下的东西。',
     choices: [
       { label: '依法修习（需大智慧）', req: { attrMin: { int: 16 } }, outcome: { flags: ['d_jiachuan_3', 'unlock_origin_veteran'], learn: { id: 'taixuan_zhenjing' }, text: '你凝神修习，心无旁骛。当第一缕真气汇入丹田时，你终于明白爹娘为何以命护它。' } },
@@ -333,7 +333,7 @@ export const EVENTS: EventDefView[] = [
     id: 'dest_miemen_1',
     title: '雪夜的梦',
     weight: 20,
-    cond: { destiny: 'miemen_chichou', noFlag: 'd_miemen_1' },
+    cond: { location: 'pomin', slots: [0], destiny: 'miemen_chichou', noFlag: 'd_miemen_1' },
     text: '你又梦见那个雪夜：黑衣人一脚踹开家门，刀光落处满地皆红。惊醒时你攥着被角，指甲掐进了掌心——那人的刀鞘上，有云雷纹。',
     choices: [
       { label: '去坊市打听云雷纹刀鞘', outcome: { money: -2, flags: ['d_miemen_1'], text: '王婆眯着眼收了钱：「云雷纹？嘿，这可是大户人家的物件，城西柳府就有一支，不过——听说早叫人抢去了。」' } },
@@ -344,7 +344,7 @@ export const EVENTS: EventDefView[] = [
     id: 'dest_miemen_2',
     title: '黑影再现',
     weight: 20,
-    cond: { destiny: 'miemen_chichou', flag: 'd_miemen_1', noFlag: 'd_miemen_2' },
+    cond: { location: 'yelin', destiny: 'miemen_chichou', flag: 'd_miemen_1', noFlag: 'd_miemen_2' },
     text: '野林边缘，你看见了一个背影——黑衣，刀鞘云雷纹。他站在树影里，像是在等什么人，也可能，在等你。',
     choices: [
       { label: '拔刀，血债血偿', outcome: { battle: { enemy: 'heidao_ke', lethal: true, onWinFlags: ['d_miemen_2'] } } },
@@ -355,7 +355,7 @@ export const EVENTS: EventDefView[] = [
     id: 'dest_miemen_3',
     title: '仇人遗物',
     weight: 20,
-    cond: { destiny: 'miemen_chichou', flag: 'd_miemen_2', noFlag: 'd_miemen_3' },
+    cond: { location: 'yelin', destiny: 'miemen_chichou', flag: 'd_miemen_2', noFlag: 'd_miemen_3' },
     text: '黑衣人的尸身旁散落着一只油布包。你解开——是一册刀谱残页，和一封没寄出的信，信上你的乳名刺得你眼睛生疼。',
     choices: [
       { label: '收起一切，祭拜爹娘', outcome: { rep: 10, flags: ['d_miemen_3', 'unlock_origin_veteran'], text: '你在城外给爹娘立了块碑。江湖路远，往事终可告慰。' } },
@@ -368,8 +368,8 @@ export const EVENTS: EventDefView[] = [
     id: 'dest_shenshi_1',
     title: '半枚玉扣',
     weight: 20,
-    cond: { destiny: 'shenshi_zhimi', noFlag: 'd_shenshi_1' },
-    text: '养母临终前把那枚玉扣塞进你手里：「去寻你的根……柳家……」玉扣断口参差，刻着半个「柳」字。',
+    cond: { location: 'fangshi', destiny: 'shenshi_zhimi', noFlag: 'd_shenshi_1' },
+    text: '你想起养母临终前把那枚玉扣塞进你手里：「去寻你的根……柳家……」玉扣断口参差，刻着半个「柳」字。',
     choices: [
       { label: '拿着玉扣去坊市打听', outcome: { money: -3, flags: ['d_shenshi_1'], text: '王婆捧着玉扣看了半天，声音都压低了：「柳文远柳老爷的独女，二十年前失散的那个……你先别声张。」' } },
       { label: '收好玉扣，不去想', outcome: {} },
@@ -379,8 +379,8 @@ export const EVENTS: EventDefView[] = [
     id: 'dest_shenshi_2',
     title: '柳府门前',
     weight: 20,
-    cond: { destiny: 'shenshi_zhimi', flag: 'd_shenshi_1', noFlag: 'd_shenshi_2' },
-    text: '你在柳府门外站了三天。第四天，柳文远的轿子停在了你面前，他盯着你腕上的玉扣，手竟在抖。',
+    cond: { location: 'fangshi', destiny: 'shenshi_zhimi', flag: 'd_shenshi_1', noFlag: 'd_shenshi_2' },
+    text: '你循着线索来到柳府门前，恰逢柳文远的轿子停下，他盯着你腕上的玉扣，手竟在抖。',
     choices: [
       { label: '掏出玉扣相认', randomOutcomes: [
         { weight: 6, outcome: { flags: ['d_shenshi_2'], money: 50, factions: { shanghui: 30 }, npcs: { liu_wenyuan: 30 }, rep: 5, text: '柳文远老泪纵横：「我的儿……回来就好，回来就好。」当晚你住进了柳府的厢房。' } },
@@ -393,7 +393,7 @@ export const EVENTS: EventDefView[] = [
     id: 'dest_shenshi_3',
     title: '血脉之凭',
     weight: 20,
-    cond: { destiny: 'shenshi_zhimi', flag: 'd_shenshi_2', noFlag: 'd_shenshi_3' },
+    cond: { location: 'fangshi', destiny: 'shenshi_zhimi', flag: 'd_shenshi_2', noFlag: 'd_shenshi_3' },
     text: '柳文远带你去见了城中的老族老。老人捧着两枚玉扣合在一起，断口严丝合缝，浑浊的眼里泛起泪光：「是柳家的骨血，错不了。」',
     choices: [
       { label: '认祖归宗', outcome: { money: 100, rep: 10, factions: { shanghui: 30 }, flags: ['d_shenshi_3'], text: '柳家设宴三日，全城皆知柳氏寻回了血脉。你的命，从今日起是另一条命了。' } },

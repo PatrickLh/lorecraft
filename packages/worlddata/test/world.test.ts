@@ -7,7 +7,7 @@ import {
   type LifeState,
   type Rng,
 } from '@lorecraft/core'
-import { createLife } from '@lorecraft/core'
+import { createLife, eventCondMet } from '@lorecraft/core'
 import {
   checkWorld,
   ENEMIES,
@@ -26,6 +26,25 @@ import { MARTIAL_DEFS } from '../src/index.js'
 const NOW = '2026-01-01T00:00:00Z'
 
 describe('世界数据完整性（plan P1）', () => {
+  it('身世中的野林和柳府事件不会在未到达的地点触发', () => {
+    const life = createLife('location-check', ORIGINS[0]!, NOW)
+    for (const [id, location, destiny, flag] of [
+      ['dest_jiachuan_2', 'yelin', 'jiachuan_miji', 'd_jiachuan_1'],
+      ['dest_jiachuan_3', 'yelin', 'jiachuan_miji', 'd_jiachuan_2'],
+      ['dest_miemen_2', 'yelin', 'miemen_chichou', 'd_miemen_1'],
+      ['dest_miemen_3', 'yelin', 'miemen_chichou', 'd_miemen_2'],
+      ['dest_shenshi_2', 'fangshi', 'shenshi_zhimi', 'd_shenshi_1'],
+      ['dest_shenshi_3', 'fangshi', 'shenshi_zhimi', 'd_shenshi_2'],
+    ]) {
+      life.destinyId = destiny!
+      life.flags = [flag!]
+      life.locationId = 'matou'
+      const event = EVENTS.find(e => e.id === id)!
+      expect(eventCondMet(life, event.cond)).toBe(false)
+      life.locationId = location!
+      expect(eventCondMet(life, event.cond)).toBe(true)
+    }
+  })
   it('checks 全过', () => {
     expect(
       checkWorld({
