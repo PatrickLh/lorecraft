@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { END_CAUSE_TEXT } from '../types.js'
-import { martialName, originName, state, toggleHistory } from '../store.js'
+import { martialName, originName, state, toggleHistory, openLatestEnding } from '../store.js'
 
 const history = computed(() => state.history)
 
@@ -15,6 +15,7 @@ function endText(h: { endType: string; endingId: string | null; deathCause: stri
   <div>
     <div class="head">
       <h2>轮回历史</h2>
+      <button v-if="history.length" :disabled="state.loading" @click="openLatestEnding">查看上一世结局</button>
       <button @click="toggleHistory">返回</button>
     </div>
 

@@ -7,7 +7,6 @@ import type { LlmProvider, TokenUsage } from './provider.js'
 import { ProviderError, emptyUsage } from './provider.js'
 import {
   MEMORY_SCHEMA_NAME,
-  MemoryExtractionSchema,
   SUMMARY_SCHEMA_NAME,
   SummarySchema,
   memoryJsonSchema,
@@ -19,6 +18,15 @@ import {
   buildSummaryPrompt,
 } from './prompts.js'
 import { sanitizeMemories } from '@lorecraft/core'
+
+/** 只容忍 JSON 围栏和条数/长度偏差；字段类型错误仍失败，不猜测记忆内容。 */
+function parseMemories(raw: string, maxCount = 5): string[] {
+  const json = raw.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, '$1')
+  const parsed = z.object({ memories: z.array(z.string()) }).parse(JSON.parse(json))
+  const list = sanitizeMemories(parsed.memories.map(text => ({ text })), maxCount)
+  if (list.length === 0) throw new SyntaxError('未提炼出有效记忆')
+  return list
+}
 
 export type AuxResult<T> =
   | { ok: true; value: T; usage: TokenUsage }
@@ -81,10 +89,7 @@ export async function extractMemories(
       toolName: MEMORY_SCHEMA_NAME,
       timeoutMs: args.timeoutMs,
     },
-    (raw) => {
-      const parsed = MemoryExtractionSchema.parse(JSON.parse(raw))
-      return sanitizeMemories(parsed.memories.map((text) => ({ text })))
-    }
+    (raw) => parseMemories(raw)
   )
 }
 
@@ -99,19 +104,11 @@ export async function mergeMemoriesLlm(
     {
       system: prompt.system,
       turns: prompt.turns,
-      jsonSchema: memoryJsonSchema(),
+      jsonSchema: z.toJSONSchema(z.object({ memories: z.array(z.string().min(1).max(50)).max(args.maxTotal) })),
       toolName: MEMORY_SCHEMA_NAME,
       timeoutMs: args.timeoutMs,
     },
-    (raw) => {
-      const parsed = MemoryExtractionSchema.parse(JSON.parse(raw))
-      const list = sanitizeMemories(
-        parsed.memories.map((text) => ({ text })),
-        args.maxTotal
-      )
-      if (list.length === 0) throw new SyntaxError('合并结果为空')
-      return list
-    }
+    (raw) => parseMemories(raw, args.maxTotal)
   )
 }
 

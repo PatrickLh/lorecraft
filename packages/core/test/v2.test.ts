@@ -74,6 +74,17 @@ describe('日历（plan §2 时间粒度）', () => {
 })
 
 describe('温饱与断粮（plan §2）', () => {
+  it('恢复温饱后分馍跨夜，不继承旧的连续断粮计数', () => {
+    const life = makeLife()
+    life.food = 3
+    life.slot = 3
+    life.starveDays = 2
+    const result = applyOutcome(life, { label: '分他半个馍', outcome: { food: -2 } }, new Map(), () => 0)
+    expect(result.life.food).toBe(0)
+    expect(result.life.starveDays).toBe(1)
+    expect(result.starved).toBe(false)
+    expect(result.facts.some(f => f.includes('断粮第 1 天'))).toBe(true)
+  })
   it('断粮扣血并累积天数，3 天饿死', () => {
     const life = makeLife()
     life.food = 0

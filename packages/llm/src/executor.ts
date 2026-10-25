@@ -35,7 +35,7 @@ export interface DegradedResult {
   retried: boolean
 }
 
-async function attempt<T>(
+export async function attempt<T>(
   provider: LlmProvider,
   args: {
     system: string

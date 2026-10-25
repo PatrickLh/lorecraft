@@ -47,6 +47,10 @@ export class Repos {
   }
 
   // ---- lives ----
+  getLatestEndedLife(): LifeState | null {
+    const row = this.db.prepare("SELECT data FROM lives WHERE phase = 'ended' ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as { data: string } | undefined
+    return row ? JSON.parse(row.data) as LifeState : null
+  }
   getLife(id: string): LifeRow | null {
     const row = this.db
       .prepare('SELECT id, version, phase, data, created_at FROM lives WHERE id = ?')

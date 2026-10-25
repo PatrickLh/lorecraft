@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { state, boot, toggleHistory } from './store.js'
 import PlayerStatus from './components/PlayerStatus.vue'
+import StatChanges from './components/StatChanges.vue'
 import HomeView from './views/HomeView.vue'
 import OriginSelectView from './views/OriginSelectView.vue'
 import LifeView from './views/LifeView.vue'
@@ -10,6 +11,7 @@ import EndingView from './views/EndingView.vue'
 import HistoryView from './views/HistoryView.vue'
 
 const home = ref(sessionStorage.getItem('lorecraft-screen') !== 'play')
+watch(() => state.archivedLife, value => { if (value) home.value = false })
 watch(home, value => { sessionStorage.setItem('lorecraft-screen', value ? 'home' : 'play') })
 const impact = ref(0)
 let impactTimer: ReturnType<typeof setTimeout> | undefined
@@ -26,12 +28,13 @@ const mode = computed(() => {
   if (home.value) return 'home'
   if (!state.booted) return state.error ? 'error' : 'loading'
   if (state.showHistory) return 'history'
+  if (state.archivedLife) return 'ended'
   if (!state.life) return 'origin'
   if (state.life.phase === 'ended') return 'ended'
   return state.life.pendingBattle ? 'battle' : 'life'
 })
 const playing = computed(() => mode.value === 'life' || mode.value === 'battle')
-function enter(): void { state.showHistory = false; home.value = false }
+function enter(): void { state.archivedLife = null; state.showHistory = false; home.value = false }
 function history(): void { home.value = false; if (!state.showHistory) toggleHistory() }
 </script>
 
@@ -52,6 +55,7 @@ function history(): void { home.value = false; if (!state.showHistory) toggleHis
 
   <div v-else class="play-return"><button @click="home = true">← 返回主页</button><span>江湖一生 · {{ mode === 'battle' ? '交锋' : '此生' }}</span></div>
   <PlayerStatus v-if="playing" />
+  <StatChanges v-if="!home" />
   <main :class="{ 'ink-impact': impact > 0 }">
     <TransitionGroup name="notice" tag="div" class="notice-stack" aria-live="polite">
       <div v-for="n in state.notices" :key="n.id" class="notice" :class="{ bad: n.bad }">{{ n.text }}</div>

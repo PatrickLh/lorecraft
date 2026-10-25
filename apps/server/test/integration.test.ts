@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Hono } from 'hono'
-import type { LifeState, Rng } from '@lorecraft/core'
+import { fallbackDaily, type LifeState, type Rng } from '@lorecraft/core'
 import { MockProvider } from '@lorecraft/llm'
 import { loadConfig } from '../src/config.js'
 import { openDb } from '../src/db.js'
@@ -10,6 +10,116 @@ import { Repos } from '../src/repos.js'
 import { createApp } from '../src/routes.js'
 
 const NOW = '2026-01-01T00:00:00Z'
+
+describe('每日预生成事件', () => {
+  it('一天仅生成一次，四次选择不调模型，刷新恢复；次日使用昨日经历', async () => {
+    const s = setup()
+    try {
+      const spy = vi.spyOn(s.mock, 'generate')
+      const { life } = s.service.createLife('nongjia_zi')
+      const prepared = await act(s, life.id, life.version, { kind: 'daily_prepare' })
+      expect(prepared.life.day).toBe(life.day)
+      expect(prepared.life.slot).toBe(life.slot)
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(prepared.life.dailyPlan?.routes).toHaveLength(3)
+      const id = prepared.life.dailyPlan!.id
+      let current = prepared.life
+      for (let slot = 0; slot < 4; slot++) {
+        const requestId = crypto.randomUUID()
+        const command = { kind: 'daily_choose', planId: id, slot, index: 0 }
+        const result = await act(s, life.id, current.version, command, requestId)
+        const replay = await act(s, life.id, current.version, command, requestId)
+        expect(replay.life).toEqual(result.life)
+        expect(result.life.money).toBe(current.money + 3)
+        expect(result.life.food).toBeGreaterThan(0)
+        const restored = await (await s.app.request('/api/lives/active')).json() as { life: LifeState }
+        expect(restored.life.dailyPlan).toEqual(result.life.dailyPlan)
+        current = result.life
+      }
+      expect(current.day).toBe(life.day + 1)
+      expect(current.slot).toBe(0)
+      expect(current.dailyPlan).toBeNull()
+      expect(spy).toHaveBeenCalledTimes(1)
+      await act(s, life.id, current.version, { kind: 'daily_prepare' })
+      expect(spy).toHaveBeenCalledTimes(2)
+      expect(JSON.stringify(spy.mock.calls[1]![0].turns)).toContain('帮工换取工钱和饭食')
+    } finally { s.db.close() }
+  })
+
+  it('首个选择确定地点和后续路线，过期选项/重新生成被拒绝', async () => {
+    const s = setup()
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      const content = fallbackDaily('pomin', '贫民窟')
+      content.routes[1]!.locationId = 'biaoju'
+      content.routes[1]!.entry.label = '前往镖局练武'
+      content.routes[1]!.entry.followUp = '你答应明日核对镖局的旧货单'
+      content.routes[2]!.entry.followUp = '未选择的分支不能成为经历'
+      content.routes[1]!.stages[0]!.title = '镖局内的午间差事'
+      s.mock.push({ type: 'raw', text: JSON.stringify(content) })
+      const ready = await act(s, life.id, life.version, { kind: 'daily_prepare' })
+      const id = ready.life.dailyPlan!.id
+      await expect(act(s, life.id, ready.life.version, { kind: 'daily_prepare' })).rejects.toMatchObject({ code: 'daily_exists' })
+      const selected = await act(s, life.id, ready.life.version, { kind: 'daily_choose', planId: id, slot: 0, index: 1 })
+      expect(selected.life.locationId).toBe('biaoju')
+      expect(selected.life.dailyPlan?.selectedRoute).toBe(1)
+      expect(selected.life.storyThreads?.map(t => t.text)).toEqual(['你答应明日核对镖局的旧货单'])
+      await expect(act(s, life.id, selected.life.version, { kind: 'daily_choose', planId: id, slot: 0, index: 0 })).rejects.toMatchObject({ code: 'daily_stale' })
+      const next = await act(s, life.id, selected.life.version, { kind: 'daily_choose', planId: id, slot: 1, index: 0 })
+      expect(next.life.history.at(-1)?.label).toBe('镖局内的午间差事')
+      expect(next.life.locationId).toBe('biaoju')
+    } finally { s.db.close() }
+  })
+
+  it('旧存档从当前时辰起使用每日事件，切回旧行动后不继续使用旧分支', async () => {
+    const s = setup()
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      life.slot = 2
+      s.repos.saveLifeDataOnly(life, NOW)
+      const ready = await act(s, life.id, life.version, { kind: 'daily_prepare' })
+      expect(ready.life.dailyPlan?.startSlot).toBe(2)
+      const legacy = await act(s, life.id, ready.life.version, { kind: 'action', actionId: 'yongfan' })
+      expect(legacy.life.dailyPlan).toBeNull()
+      await expect(act(s, life.id, legacy.life.version, { kind: 'daily_choose', planId: ready.life.dailyPlan!.id, slot: 2, index: 0 })).rejects.toMatchObject({ code: 'daily_stale' })
+    } finally { s.db.close() }
+  })
+
+  it('生成失败使用可结算的保底事件，不消耗时间或清除已有存档', async () => {
+    const s = setup()
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      s.mock.push({ type: 'error', kind: 'timeout', message: 'test timeout' })
+      const ready = await act(s, life.id, life.version, { kind: 'daily_prepare' })
+      expect(ready.life.dailyPlan?.source).toBe('fallback')
+      expect(ready.life.dailyPlan?.generationError).toContain('timeout')
+      expect(ready.life.slot).toBe(life.slot)
+      const result = await act(s, life.id, ready.life.version, { kind: 'daily_choose', planId: ready.life.dailyPlan!.id, slot: life.slot, index: 0 })
+      expect(result.life.money).toBe(life.money + 3)
+    } finally { s.db.close() }
+  })
+  it('仅未开始的保底方案允许重试；开始后不改写当天经历', async () => {
+    const s = setup()
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      s.mock.push({ type: 'error', kind: 'timeout', message: 'test' })
+      const fallback = await act(s, life.id, life.version, { kind: 'daily_prepare' })
+      const retry = await act(s, life.id, fallback.life.version, { kind: 'daily_prepare', retry: true })
+      expect(retry.life.dailyPlan?.source).toBe('llm')
+      expect(retry.life.slot).toBe(life.slot)
+      expect(retry.life.dailyPlan?.id).not.toBe(fallback.life.dailyPlan?.id)
+      const chosen = await act(s, life.id, retry.life.version, { kind: 'daily_choose', planId: retry.life.dailyPlan!.id, slot: 0, index: 0 })
+      await expect(act(s, life.id, chosen.life.version, { kind: 'daily_prepare', retry: true })).rejects.toMatchObject({ code: 'daily_exists' })
+    } finally { s.db.close() }
+  })
+  it('本地故事按日变化，首个场景和后续发现不是同一套等待模板', () => {
+    const first = fallbackDaily('pomin', '贫民窟', 0)
+    const second = fallbackDaily('pomin', '贫民窟', 1)
+    expect(first.title).not.toBe(second.title)
+    expect(first.text).not.toBe(second.text)
+    expect(first.routes[0]!.stages[0]!.text).not.toBe(second.routes[0]!.stages[0]!.text)
+  })
+})
 
 interface Setup {
   db: ReturnType<typeof openDb>
@@ -271,6 +381,7 @@ describe('P2：死亡、轮回与继承', () => {
 
   it('断粮饿死 → 履历/记忆任务/新一世可用；settle 幂等', async () => {
     const s = setup()
+    expect(await (await s.app.request('/api/lives/latest-ended')).json()).toEqual({ life: null })
     const { life } = s.service.createLife('nongjia_zi')
     life.food = 0
     expect(s.repos.saveLife(life, life.version, NOW)).toBe(true)
@@ -299,6 +410,12 @@ describe('P2：死亡、轮回与继承', () => {
     // 新一世可开局
     const { life: life2 } = s.service.createLife('shijing_youer')
     expect(life2.phase).toBe('alive')
+    const archivedResponse = await s.app.request('/api/lives/latest-ended')
+    expect(archivedResponse.status).toBe(200)
+    const archived = await archivedResponse.json() as { life: { id: string; phase: string } }
+    expect(archived.life.id).toBe(life.id)
+    expect(archived.life.phase).toBe('ended')
+    expect(s.service.getActiveLife()?.id).toBe(life2.id)
   })
 
   it('选择型结局：满足条件可选并写结局章', async () => {
@@ -349,15 +466,18 @@ describe('P2：死亡、轮回与继承', () => {
     s.repos.saveLife(life, life.version, NOW)
     await starveToEnd(s, life)
 
+    expect(await (await s.app.request(`/api/lives/${life.id}/memory`)).json()).toEqual({ pending: 1, failed: 0, lastError: null })
     s.mock.push({ type: 'raw', text: 'not-json' })
     const fail = await s.service.retryMemory(life.id)
     expect(fail.failed).toBe(1)
     expect(fail.meta.memories).toHaveLength(0)
+    expect(await (await s.app.request(`/api/lives/${life.id}/memory`)).json()).toEqual({ pending: 0, failed: 1, lastError: 'schema：输出不符合契约' })
 
     s.mock.push({ type: 'raw', text: JSON.stringify({ memories: ['破庙能挡风'] }) })
     const ok = await s.service.retryMemory(life.id)
     expect(ok.processed).toBe(1)
     expect(ok.meta.memories.map((m) => m.text)).toContain('破庙能挡风')
+    expect(await (await s.app.request(`/api/lives/${life.id}/memory`)).json()).toEqual({ pending: 0, failed: 0, lastError: null })
   })
 })
 
@@ -468,6 +588,21 @@ describe('回合时间与事件阶段', () => {
 })
 
 describe('自由文本进入具体事件', () => {
+  it('镖局劳动文本结算工钱和饭食，继续干活保留原意，否定不发放', async () => {
+    const s = setup(() => .5)
+    try {
+      const { life } = s.service.createLife('nongjia_zi')
+      const result = await act(s, life.id, life.version, { kind: 'free', input: '回镖局灶房接着干活，别误了时辰' })
+      expect(result.life.locationId).toBe('biaoju')
+      expect(result.life.money).toBe(life.money + 3)
+      expect(result.life.food).toBeGreaterThan(life.food)
+      expect(result.life.history.at(-1)?.playerInput).toBe('回镖局灶房接着干活，别误了时辰')
+      const next = await act(s, life.id, result.life.version, { kind: 'free', input: '继续干活' })
+      expect(next.life.money).toBe(result.life.money + 3)
+      const negative = await act(s, life.id, next.life.version, { kind: 'free', input: '不去镖局打工' })
+      expect(negative.life.money).toBe(next.life.money)
+    } finally { s.db.close() }
+  })
   it('坊市闲逛实际前往坊市，事件只能来自该地点', async () => {
     const s = setup(() => 0)
     try {

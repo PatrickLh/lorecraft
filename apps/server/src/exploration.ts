@@ -7,8 +7,12 @@ export function availableEvents(life: LifeState) {
 }
 
 /** 只识别明确指令；长篇自由叙述仍交给叙事，不按零散关键词强制改写行为。 */
-export function resolveExplorationInput(input: string): { kind: 'action'; actionId: string } | { kind: 'travel'; locationId: string } | { kind: 'seek_event'; eventId: string } | null {
+export function resolveExplorationInput(input: string, locationId?: string): { kind: 'action'; actionId: string } | { kind: 'travel'; locationId: string } | { kind: 'seek_event'; eventId: string } | null {
   const clean = input.trim().replace(/[。！!]+$/, '').replace(/^(?:我要|我想|我)/, '')
+  // 明确提出做工才结算；询问、否定或纯打听不算完成劳动。
+  if (!/(?:不|没|别|停止|取消).{0,12}(?:打工|帮工|干活|劈柴|挑水|做饭)|打听|询问|听说|能否|是否|吗|么|？|\?/.test(clean) && (/镖局|灶房|马厩/.test(clean) || locationId === 'biaoju') && /打工|帮工|干活|活计|劈柴|挑水|做饭|添火|架.*柴|打下手/.test(clean)) {
+    return { kind: 'action', actionId: 'biaoju_banggong' }
+  }
   const aliases: Record<string, string> = { '吃饭': 'yongfan', '买碗饭': 'yongfan', '吃点东西': 'yongfan', '去码头干活': 'zuogong', '到码头扛包': 'zuogong' }
   if (aliases[clean] || aliases[clean.replace(/^去/, '')]) return { kind: 'action', actionId: aliases[clean] ?? aliases[clean.replace(/^去/, '')]! }
   const action = ACTIONS.find(a => clean === a.label || clean === `去${a.label}`)

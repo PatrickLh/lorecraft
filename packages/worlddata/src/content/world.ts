@@ -3,6 +3,7 @@ import type { ActionDef, FactionDef, LocationDef, NpcDef } from '../types.js'
 /** 钱塘城：江南水乡的市井江湖（单城 MVP，requirement §8）。 */
 
 export const LOCATIONS: LocationDef[] = [
+  { id: 'biaoju', name: '镖局', desc: '镖师练武、杂役挑水劈柴的院落。帮工可领工钱，饭堂供饭。' },
   { id: 'fangshi', name: '坊市', desc: '钱塘城最热闹的地界，酒楼茶肆当铺药铺挤作一处，三教九流都在这里讨生活。' },
   { id: 'matou', name: '码头', desc: '漕船如织，号子震天。脚夫扛包，帮众闲逛，是力气换钱的地方，也是是非之地。' },
   { id: 'pomin', name: '贫民窟', desc: '低矮的窝棚连绵成片，破庙立在坡上。活下去都难，但没人管你从哪里来。' },
@@ -34,6 +35,7 @@ export const NPCS: NpcDef[] = [
 
 /** 固定行动菜单（requirement §10；修炼=成长层②，做工/闲逛等触发事件抽取） */
 export const ACTIONS: ActionDef[] = [
+  { id: 'biaoju_banggong', label: '镖局帮工', desc: '做一段杂役，工钱三两并管饭（温饱 +3），消耗一个时辰', slots: 1, moneyGain: [3, 3], foodGain: 3 },
   { id: 'lianwu', label: '练武', desc: '打熬拳脚功夫', slots: 1, growth: { key: 'atk', chance: 0.25 }, martialLevelChance: 0.08 },
   { id: 'lianti', label: '练体', desc: '扎马打熬筋骨皮肉', slots: 1, growth: { key: 'def', chance: 0.25 } },
   { id: 'dushu', label: '读书', desc: '读些书册经卷，长学问', slots: 1, moneyCost: 1, growth: { key: 'int', chance: 0.3 } },

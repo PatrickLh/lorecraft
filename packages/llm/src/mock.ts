@@ -5,6 +5,7 @@
  */
 import type { GenerateHooks, GenerateRequest, GenerateResult, LlmProvider, ProviderErrorKind } from './provider.js'
 import { ProviderError } from './provider.js'
+import { fallbackDaily } from '@lorecraft/core'
 
 export type MockStep =
   | { type: 'raw'; text: string }
@@ -65,6 +66,10 @@ export class MockProvider implements LlmProvider {
 
   /** 按 prompt 中的 schema 名标记（【输出类型：…】）决定默认输出形状 */
   private defaultOutput(userText: string): string {
+    if (userText.includes('【输出类型：每日事件】')) {
+      const id = userText.match(/当前地点ID：([^。\n]+)/)?.[1] ?? 'pomin'
+      return JSON.stringify(fallbackDaily(id, '此地', Number(userText.match(/绝对日序：(\d+)/)?.[1] ?? 0)))
+    }
     if (userText.includes('【输出类型：人物档案】')) return JSON.stringify({ characters: [] })
     if (userText.includes('【输出类型：战斗】')) {
       const enemy = extractAfterMarker(userText, '【敌方】').split('\n')[0]?.trim() || '敌人'

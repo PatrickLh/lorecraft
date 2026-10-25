@@ -3,9 +3,11 @@
  * 权威状态在服务端；LLM 演绎在事务外；requestId 幂等 + 版本校验；事务原子提交。
  */
 import { availableEvents, resolveExplorationInput } from './exploration.js'
+import { settleDailyChoice } from './daily.js'
 import type Database from 'better-sqlite3'
 import {
   advanceTime,
+  fallbackDaily,
   rememberCharacters,
   applyBattleConsequences,
   applyFixedAction,
@@ -44,6 +46,7 @@ import {
 } from '@lorecraft/core'
 import {
   extractMemories,
+  generateDaily,
   runCharacterExtraction,
   mergeMemoriesLlm,
   runActAttempt,
@@ -76,6 +79,8 @@ export interface TurnHooks {
 }
 
 export type ActRequest =
+  | { kind: 'daily_prepare'; retry?: boolean }
+  | { kind: 'daily_choose'; planId: string; slot: number; index: number }
   | { kind: 'action'; actionId: string }
   | { kind: 'free'; input: string }
   | { kind: 'event_choice'; index: number }
@@ -254,6 +259,20 @@ export class GameService {
     return life ? this.restoreSavedSuggestions(life) : null
   }
 
+  getLatestEndedLife(): LifeState | null {
+    return this.repos.getLatestEndedLife()
+  }
+
+  memoryStatus(lifeId: string): { pending: number; failed: number; lastError: string | null } {
+    this.getLife(lifeId)
+    const tasks = this.repos.openMemoryTasks(lifeId)
+    return {
+      pending: tasks.filter(t => t.status === 'pending').length,
+      failed: tasks.filter(t => t.status === 'failed').length,
+      lastError: tasks.filter(t => t.status === 'failed').at(-1)?.error ?? null,
+    }
+  }
+
   getLife(id: string): LifeState {
     const row = this.repos.getLife(id)
     if (!row) throw new HttpError(404, 'life_not_found', '这一世不存在')
@@ -344,7 +363,7 @@ export class GameService {
     }
 
     const originalInput = act.kind === 'free' ? act.input.trim() : null
-    if (originalInput) act = resolveExplorationInput(originalInput) ?? act
+    if (originalInput) act = resolveExplorationInput(originalInput, lifeRow.data.locationId) ?? act
     const meta = this.ensureMeta()
     const discount = reqDiscountForLives(meta.livesCount)
 
@@ -362,13 +381,53 @@ export class GameService {
     let playerInput = ''
 
     try {
-      if (act.kind === 'action') {
+      if (act.kind === 'daily_prepare') {
+        if (working.dailyPlan?.day === working.day && working.dailyPlan.startSlot <= working.slot && !(act.retry && working.dailyPlan.source === 'fallback' && working.slot === working.dailyPlan.startSlot && working.dailyPlan.selectedRoute === null)) {
+          throw new HttpError(409, 'daily_exists', '今日事件已准备好，请继续选择或刷新同步')
+        }
+        const generated = await generateDaily({ provider: this.provider, life: working, meta, locations: LOCATIONS, timeoutMs: this.config.llmDailyTimeoutMs })
+        this.logUsage('daily', generated.usage, lifeId)
+        const content = generated.kind === 'ok' ? generated.value : fallbackDaily(working.locationId, getLocation(working.locationId)?.name ?? '此地', working.day)
+        working.dailyPlan = { ...content, id: this.genId(), day: working.day, startSlot: working.slot, selectedRoute: null, source: generated.kind === 'ok' ? 'llm' : 'fallback', generationError: generated.kind === 'degraded' ? generated.reason : undefined }
+        historyKind = 'system'
+        historyLabel = '今日事件已备妥'
+        narrative = content.text
+        facts = [generated.kind === 'ok' ? '今日分支已生成，选择后直接结算' : '编剧暂不可用，已准备可游玩的生计与修行事件']
+      } else if (act.kind === 'daily_choose') {
+        const plan = working.dailyPlan
+        if (!plan || plan.id !== act.planId || plan.day !== working.day || act.slot !== working.slot) throw new HttpError(409, 'daily_stale', '此选项已过期，请刷新同步')
+        if (!Number.isInteger(act.index) || act.index < 0 || act.index > 2) throw new HttpError(400, 'bad_choice', '非法选项')
+        const offset = working.slot - plan.startSlot
+        const route = offset === 0 ? plan.routes[act.index] : plan.routes[plan.selectedRoute ?? -1]
+        const scene = offset === 0 ? null : route?.stages[offset - 1]
+        const choice = offset === 0 ? route?.entry : scene?.choices[act.index]
+        if (!route || !choice || (offset > 0 && working.locationId !== route.locationId)) throw new HttpError(409, 'daily_stale', '当前场景不符合此分支，请重新同步')
+        const beforeLocation = working.locationId
+        if (offset === 0) { plan.selectedRoute = act.index; working.locationId = route.locationId }
+        const result = settleDailyChoice(working, choice, this.rng)
+        if (result.invalid) throw new HttpError(400, 'invalid_action', result.invalid)
+        working = result.life
+        if (choice.followUp?.trim()) {
+          const text = choice.followUp.trim().slice(0, 100)
+          working.storyThreads = [...(working.storyThreads ?? []).filter(t => t.text !== text), { day: plan.day, text }].slice(-6)
+        }
+        facts = result.facts
+        if (beforeLocation !== working.locationId) facts.unshift(`前往${getLocation(working.locationId)?.name ?? working.locationId}`)
+        if (result.diedOfStarve) markLifeEnd(working, 'death', { deathCause: 'starve' })
+        else if (result.goodDeath) markLifeEnd(working, 'ending', { endingId: 'shan_zhong' })
+        historyKind = 'event'
+        historyLabel = scene?.title ?? plan.title
+        playerInput = choice.label
+        narrative = [scene?.text, choice.result, facts.join('；')].filter(Boolean).join('\n\n')
+        if (working.day !== plan.day) working.dailyPlan = null
+      } else if (act.kind === 'action') {
         const action = ACTIONS.find((a) => a.id === act.actionId)
         if (!action) throw new HttpError(404, 'action_not_found', `行动不存在：${act.actionId}`)
         historyLabel = action.label
         playerInput = originalInput ?? action.label
         if (action.id === 'zuogong') working.locationId = 'matou'
         if (action.id === 'fangshi') working.locationId = 'fangshi'
+        if (action.id === 'biaoju_banggong') working.locationId = 'biaoju'
         const res =
           action.id === 'guoyiri'
             ? restOfDay(working, this.rng)
@@ -464,7 +523,8 @@ export class GameService {
       }
 
       // ---- LLM 行动演绎（事务外） ----
-      if (working.phase === 'alive') {
+      if (act.kind !== 'daily_prepare' && act.kind !== 'daily_choose') working.dailyPlan = null
+      if (working.phase === 'alive' && act.kind !== 'daily_prepare' && act.kind !== 'daily_choose') {
         const attempt = await runActAttempt({
           provider: this.provider,
           life: working,
@@ -477,7 +537,7 @@ export class GameService {
           playerInput:
             act.kind === 'free'
               ? freeInput
-              : historyLabel + (facts.length > 0 ? `（${facts.join('；')}）` : ''),
+              : (originalInput ?? historyLabel) + (facts.length > 0 ? `（${facts.join('；')}）` : ''),
           allowGrowth: act.kind === 'free' && !working.pendingEventId,
           validateGrowth: (life, growth) => validateGrowthDecl(life, growth),
           timeoutMs: this.config.llmTimeoutMs,
@@ -528,6 +588,7 @@ export class GameService {
         playerInput,
         battleStarted,
         endInfo,
+        skipSummary: act.kind === 'daily_prepare' || act.kind === 'daily_choose',
       })
     } catch (e) {
       this.repos.releaseRequest(lifeId, requestId)
@@ -873,11 +934,13 @@ export class GameService {
       playerInput: string
       battleStarted: ActResponse['battleStarted']
       endInfo: EndInfo | null
+      skipSummary?: boolean
     }
   ): Promise<ActResponse> {
     args.life.suggestedActions = args.life.phase === 'alive' && !args.life.pendingBattle ? [...args.suggestions] : []
     return this.commitGeneric<ActResponse>(lifeId, requestId, expectedVersion, {
       life: args.life,
+      skipSummary: args.skipSummary,
       historyKind: args.historyKind,
       historyLabel: args.historyLabel,
       playerInput: args.playerInput,
@@ -904,6 +967,7 @@ export class GameService {
     expectedVersion: number,
     args: {
       life: LifeState
+      skipSummary?: boolean
       historyKind: HistoryEntry['kind']
       historyLabel: string
       historyText: string
@@ -936,7 +1000,7 @@ export class GameService {
       return { response, life }
     })
     const { response, life } = tx()
-    if (life.logSeq % SUMMARY_EVERY_ACTIONS === 0 && life.phase === 'alive') {
+    if (!args.skipSummary && life.logSeq % SUMMARY_EVERY_ACTIONS === 0 && life.phase === 'alive') {
       await this.trySummarize(lifeId, life)
     }
     return response

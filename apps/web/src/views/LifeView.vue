@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api.js'
+import DailyEvents from '../components/DailyEvents.vue'
+import { currentDailyScene } from '@lorecraft/core'
 import {
   clearNotices,
   locationName,
@@ -11,6 +13,10 @@ import {
 } from '../store.js'
 
 const input = ref('')
+const dailyScene = computed(() => state.life ? currentDailyScene(state.life) : null)
+const dailyMode = ref(localStorage.getItem('lorecraft-event-mode') !== 'legacy')
+const visibleLog = computed(() => state.log.filter((entry, index) => !(dailyMode.value && index === state.log.length - 1 && entry.kind === 'narrative' && entry.text === dailyScene.value?.text)))
+watch(dailyMode, value => localStorage.setItem('lorecraft-event-mode', value ? 'daily' : 'legacy'))
 const exploration = ref<HTMLDialogElement | null>(null)
 const opportunities = ref<{ id: string; title: string; text: string }[]>([])
 const exploring = ref(false)
@@ -39,7 +45,7 @@ const endingOptions = computed(() => state.availableEndings)
 const availableActions = computed(() => state.catalog?.actions ?? [])
 
 watch(
-  () => [state.log.length, state.log.at(-1)?.text],
+  () => [state.log.length, state.log.at(-1)?.text, dailyScene.value?.title, state.life?.slot],
   async () => {
     if (!stick.value) return
     await nextTick()
@@ -78,10 +84,10 @@ function sendFree(text?: string): void {
 </script>
 
 <template>
-  <div class="life-grid">
+  <div class="life-grid" :class="{ 'daily-layout': dailyMode }">
     <section class="card main-pane">
       <div ref="logPane" class="log" @scroll="onScroll">
-        <div v-for="entry in state.log" :key="entry.id" :class="['entry', entry.kind]">
+        <div v-for="entry in visibleLog" :key="entry.id" :class="['entry', entry.kind]">
           <span v-if="entry.kind === 'player'" class="player-line">❯ {{ entry.text }}</span>
           <span v-else-if="entry.kind === 'system'" class="system-line">{{ entry.text }}</span>
           <span v-else-if="entry.kind === 'battle'" class="battle-line">{{ entry.text }}</span>
@@ -89,9 +95,10 @@ function sendFree(text?: string): void {
             {{ entry.text }}<span v-if="entry.pending" class="cursor">▍</span>
           </template>
         </div>
+        <article v-if="dailyMode && dailyScene && !state.pendingEvent" class="current-daily-scene"><h3>{{ dailyScene.title }}</h3><p>{{ dailyScene.text }}</p></article>
       </div>
 
-      <div v-if="state.ui === 'degraded'" class="notice">
+      <div v-if="!dailyMode && state.ui === 'degraded'" class="notice">
         时空扰动：{{ state.lastDegradedReason ?? '演绎未通过校验' }}。本段行动无果。
       </div>
       <div v-if="state.ui === 'connection_lost'" class="notice bad">
@@ -120,6 +127,7 @@ function sendFree(text?: string): void {
       </div>
 
       <!-- 特殊行动：选择型结局 -->
+      <DailyEvents v-if="dailyMode && !state.pendingEvent" />
       <div v-if="!state.pendingEvent && endingOptions.length > 0" class="endings">
         <span class="dim">心头忽然浮起一个念头：</span>
         <button v-for="e in endingOptions" :key="e.id" class="suggestion" :disabled="busy" @click="chooseEnding(e.id, e.name)">
@@ -128,13 +136,13 @@ function sendFree(text?: string): void {
       </div>
 
       <!-- 建议行动 -->
-      <div class="suggestions" role="group" aria-label="推荐行动" v-if="state.suggestions.length > 0 && !state.pendingEvent">
+      <div class="suggestions" role="group" aria-label="推荐行动" v-if="!dailyMode && state.suggestions.length > 0 && !state.pendingEvent">
         <button v-for="sg in state.suggestions" :key="sg" class="suggestion" :disabled="busy" @click="sendFree(sg)">
           {{ sg }}
         </button>
       </div>
 
-      <div class="input-row">
+      <div v-if="!dailyMode" class="input-row">
         <input
           v-model="input"
           type="text"
@@ -147,10 +155,11 @@ function sendFree(text?: string): void {
           {{ busy ? '……' : '行动' }}
         </button>
       </div>
-      <p class="dim hint">每行动消耗一个时辰（一日四时辰：晨/午/昏/夜）；「住店」「过一日」快进时间。</p>
+      <p v-if="!dailyMode" class="dim hint">每行动消耗一个时辰（一日四时辰：晨/午/昏/夜）；「住店」「过一日」快进时间。</p>
+      <div class="event-mode-switch"><span class="dim">{{ dailyMode ? '每日事件体验版 · 自由输入暂关闭' : '原有逐轮生成模式' }}</span><button :disabled="busy" @click="dailyMode = !dailyMode">{{ dailyMode ? '切回逐轮生成' : '试用每日事件' }}</button></div>
     </section>
 
-    <aside class="card side-pane" :class="{ collapsed: !actionsOpen }">
+    <aside v-if="!dailyMode" class="card side-pane" :class="{ collapsed: !actionsOpen }">
       <div class="exploration-toolbar"><button :disabled="actionBusy" @click="openExploration">附近机缘</button>
       <button class="actions-toggle" :aria-expanded="actionsOpen" aria-controls="quick-actions" @click="actionsOpen = !actionsOpen">快捷行动 <span>{{ actionsOpen ? '收起 −' : '展开 +' }}</span></button></div>
       <div v-if="actionsOpen" id="quick-actions" class="action-grid">

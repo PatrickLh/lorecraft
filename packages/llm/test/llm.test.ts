@@ -219,6 +219,28 @@ describe('战斗/结局演绎执行器', () => {
 })
 
 describe('记忆/摘要辅助调用', () => {
+  it('提炼兼容 JSON 围栏，超长和超量条目先清洗再保存', async () => {
+    const mock = new MockProvider()
+    mock.push({ type: 'raw', text: '```json\n' + JSON.stringify({ memories: Array.from({ length: 8 }, (_, i) => `${i}你记得${'这段经历'.repeat(20)}`) }) + '\n```' })
+    const result = await extractMemories(mock, { sourceTitle: '前世', sourceText: '一生', timeoutMs: 1000 })
+    expect(result.ok).toBe(true)
+    if (result.ok) { expect(result.value).toHaveLength(5); expect(result.value.every(m => m.length <= 50)).toBe(true) }
+  })
+  it('空白记忆和错误字段类型不能伪装成成功', async () => {
+    for (const memories of [[], ['  '], [{ text: '不能猜测格式' }]]) {
+      const mock = new MockProvider()
+      mock.push({ type: 'raw', text: JSON.stringify({ memories }) })
+      expect((await extractMemories(mock, { sourceTitle: '前世', sourceText: '一生', timeoutMs: 1000 })).ok).toBe(false)
+    }
+  })
+  it('记忆合并按总容量处理，不受单次提炼5条的限制', async () => {
+    const mock = new MockProvider()
+    const memories = Array.from({ length: 8 }, (_, i) => `你记得第${i}次经历`)
+    mock.push({ type: 'raw', text: JSON.stringify({ memories }) })
+    const result = await mergeMemoriesLlm(mock, { memories, maxTotal: 20, timeoutMs: 1000 })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toEqual(memories)
+  })
   it('提炼清洗（去重、≤5 条）', async () => {
     const mock = new MockProvider()
     mock.push({

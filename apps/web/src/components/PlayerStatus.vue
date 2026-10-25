@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { ageOf, formatDate } from '@lorecraft/core'
 import { state, locationName, destinyName, factionName } from '../store.js'
 import AnimatedValue from './AnimatedValue.vue'
+import RollingText from './RollingText.vue'
 import AdventureJournal from './AdventureJournal.vue'
 const details = ref<HTMLDialogElement | null>(null)
 const journal = ref<InstanceType<typeof AdventureJournal> | null>(null)
@@ -19,7 +20,7 @@ const hpMax = computed(() => life.value?.injured ? Math.round(life.value.attrs.m
         <button aria-haspopup="dialog" @click="details?.showModal()">详情</button>
         <button aria-haspopup="dialog" :aria-label="`江湖册：武学 ${life.martials.length}，恩怨 ${journal?.relationCount ?? 0}，人物 ${journal?.peopleCount ?? 0}`" @click="journal?.open('people')">江湖册 <b>{{ journal?.peopleCount ?? 0 }}</b></button>
       </div>
-      <p class="mobile-status-date">{{ formatDate(life.day, life.slot) }}</p>
+      <p class="mobile-status-date"><RollingText :value="formatDate(life.day, life.slot)" :order="life.day * 4 + life.slot" /></p>
       <div class="mobile-status-values">
         <div><span>气血</span><strong><AnimatedValue :value="life.attrs.hp" /><small>/{{ hpMax }}</small></strong></div>
         <div><span>真气</span><strong><AnimatedValue :value="life.attrs.mp" /><small>/{{ life.attrs.maxMp }}</small></strong></div>
@@ -28,7 +29,7 @@ const hpMax = computed(() => life.value?.injured ? Math.round(life.value.attrs.m
       </div>
     </div>
     <div class="desktop-status">
-    <div class="status-context"><strong>{{ formatDate(life.day, life.slot) }} · {{ ageOf(life.day) }} 岁</strong><span>{{ locationName(life.locationId) }}</span><span v-if="life.sectId">{{ factionName(life.sectId) }}</span><span>身世：{{ destinyName(life.destinyId) }}</span><span v-if="life.injured" class="injury-label">重伤 · 气血上限受损</span></div>
+    <div class="status-context"><strong><RollingText :value="formatDate(life.day, life.slot)" :order="life.day * 4 + life.slot" /> · {{ ageOf(life.day) }} 岁</strong><span>{{ locationName(life.locationId) }}</span><span v-if="life.sectId">{{ factionName(life.sectId) }}</span><span>身世：{{ destinyName(life.destinyId) }}</span><span v-if="life.injured" class="injury-label">重伤 · 气血上限受损</span></div>
     <div class="status-values">
       <div class="vital-value"><span>气血</span><strong><AnimatedValue :value="life.attrs.hp" /><small> / {{ hpMax }}</small></strong><div class="status-meter"><i :style="{ width: Math.min(100, life.attrs.hp / Math.max(1,hpMax) * 100) + '%' }" /></div></div>
       <div class="vital-value"><span>真气</span><strong><AnimatedValue :value="life.attrs.mp" /><small> / {{ life.attrs.maxMp }}</small></strong><div class="status-meter"><i :style="{ width: Math.min(100, life.attrs.mp / Math.max(1,life.attrs.maxMp) * 100) + '%' }" /></div></div>

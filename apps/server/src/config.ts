@@ -43,6 +43,7 @@ export interface AppConfig {
   provider: 'mock' | 'deepseek' | 'claude'
   deepseek: { apiKey: string; baseUrl: string; model: string }
   claude: { apiKey: string; baseUrl: string; model: string }
+  llmDailyTimeoutMs: number
   llmTimeoutMs: number
   llmAuxTimeoutMs: number
 }
@@ -69,6 +70,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       baseUrl: (env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').replace(/\/$/, ''),
       model: env.CLAUDE_MODEL ?? 'claude-sonnet-5',
     },
+    llmDailyTimeoutMs: num(env.LLM_DAILY_TIMEOUT_MS, 120_000),
     llmTimeoutMs: num(env.LLM_TIMEOUT_MS, 60_000),
     llmAuxTimeoutMs: num(env.LLM_AUX_TIMEOUT_MS, 30_000),
   }

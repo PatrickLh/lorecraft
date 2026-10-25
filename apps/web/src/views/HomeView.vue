@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { state } from '../store.js'
+import { state, openLatestEnding } from '../store.js'
 import InkLandscape from '../components/InkLandscape.vue'
 defineEmits<{ enter: []; history: []; retry: [] }>()
 </script>
@@ -17,6 +17,7 @@ defineEmits<{ enter: []; history: []; retry: [] }>()
             {{ !state.booted ? '正在展卷…' : state.life?.phase === 'ended' ? '翻阅此生终章' : state.life ? '续写此生' : '初入江湖' }} <span aria-hidden="true">→</span>
           </button>
           <button :disabled="!state.booted" @click="$emit('history')">翻阅前尘</button>
+          <button v-if="state.metaInfo?.meta.livesCount" :disabled="state.loading" @click="openLatestEnding">查看上一世结局</button>
         </div>
         <p v-if="state.error" class="error-text" role="alert">暂未连上江湖：{{ state.error }} <button @click="$emit('retry')">重新连接</button></p>
         <p class="home-caption">自由抉择 / 武学修行 / 历世轮回</p>

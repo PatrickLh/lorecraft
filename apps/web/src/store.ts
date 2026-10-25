@@ -21,6 +21,7 @@ export interface LogEntry {
 }
 
 interface AppState {
+  archivedLife: LifeState | null
   booted: boolean
   loading: boolean
   error: string | null
@@ -42,6 +43,7 @@ interface AppState {
 }
 
 export const state = reactive<AppState>({
+  archivedLife: null,
   booted: false,
   loading: false,
   error: null,
@@ -191,7 +193,7 @@ export async function submitAct(act: Record<string, unknown>, label: string): Pr
   state.stagedNarrative = ''
   state.lastDegradedReason = null
   clearNotices()
-  pushLog('player', label)
+  if (act.kind !== 'daily_prepare') pushLog('player', label)
   const pendingEntry = pushLog('narrative', '', true)
   try {
     const result = await streamCall<ActResponse>({
@@ -208,7 +210,7 @@ export async function submitAct(act: Record<string, unknown>, label: string): Pr
     await handleActResult(result)
   } catch (e) {
     pendingEntry.pending = false
-    if (e instanceof ApiError && (e.code === 'version_conflict' || e.code === 'network' || e.code === 'stream_truncated')) {
+    if (e instanceof ApiError && (e.code === 'version_conflict' || e.code === 'daily_stale' || e.code === 'daily_exists' || e.code === 'network' || e.code === 'stream_truncated')) {
       state.ui = 'connection_lost'
       notice('与服务器的连接/状态不同步，正在恢复……', true)
       await resync()
@@ -279,15 +281,34 @@ export async function resync(): Promise<boolean> {
   }
 }
 
-export async function retryMemory(): Promise<void> {
-  const id = state.life?.id ?? state.metaInfo?.activeLifeId
-  if (!id) return
+export async function openLatestEnding(): Promise<void> {
+  state.loading = true
+  state.archivedLife = null
+  try {
+    const { life } = await api.getLatestEndedLife()
+    if (!life) { notice('暂无已结束的一世。'); return }
+    state.archivedLife = life
+    state.showHistory = false
+    sessionStorage.setItem('lorecraft-screen', 'play')
+  } catch (e) { notice(e instanceof Error ? e.message : String(e), true) }
+  finally { state.loading = false }
+}
+
+export async function retryMemory(): Promise<{ ok: boolean; text: string; memories: string[] }> {
+  const id = state.archivedLife?.id ?? state.life?.id ?? state.metaInfo?.activeLifeId
+  if (!id) return { ok: false, text: '未找到可提炼的一世，请重新打开结局页。', memories: [] }
+  const before = new Set(state.metaInfo?.meta.memories.map(m => m.id) ?? [])
   try {
     const r = await api.retryMemory(id)
     await refreshMetaInfo()
-    notice(r.failed > 0 ? `记忆提炼仍有 ${r.failed} 项待重试。` : '记忆提炼完成。')
+    const memories = state.metaInfo?.meta.memories.filter(m => !before.has(m.id)).map(m => m.text) ?? []
+    const text = r.failed > 0 ? `提炼未全部完成，仍有 ${r.failed} 项待重试；已有记忆已保留。` : r.processed === 0 ? '这一世没有待处理的提炼任务。' : memories.length ? `提炼完成，新增 ${memories.length} 条前世记忆。` : '提炼完成，没有新增不同于已有内容的记忆。'
+    notice(text, r.failed > 0)
+    return { ok: r.failed === 0, text, memories }
   } catch (e) {
-    notice(e instanceof ApiError ? e.message : String(e), true)
+    const text = e instanceof ApiError ? e.message : String(e)
+    notice(text, true)
+    return { ok: false, text: `提炼失败：${text}`, memories: [] }
   }
 }
 

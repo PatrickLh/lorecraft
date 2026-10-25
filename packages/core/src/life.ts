@@ -113,6 +113,8 @@ export interface TimeTickResult {
  * 注意：会就地修改 life（调用方持有副本）。
  */
 export function advanceTime(life: LifeState, slots: number): TimeTickResult {
+  // 恢复温饱即打断连续断粮，不必等到下一次日切。
+  if (life.food > 0) life.starveDays = 0
   const facts: string[] = []
   let diedOfStarve = false
   let goodDeath = false
@@ -266,6 +268,7 @@ export function applyOutcome(
 ): OutcomeResult {
   const outcome = pickOutcome(choice, rng)
   const life: LifeState = structuredCloneLife(input)
+  if (life.food > 0) life.starveDays = 0
   const facts: string[] = []
   let died = false
   let starved = false
@@ -363,6 +366,7 @@ export function applyOutcome(
     if (tick.diedOfStarve) starved = true
   } else {
     const tick = advanceTime(life, 1)
+    facts.push(...tick.facts)
     if (tick.diedOfStarve) starved = true
   }
 

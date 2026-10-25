@@ -28,7 +28,7 @@ export class DeepSeekProvider implements LlmProvider {
   async generate(req: GenerateRequest, hooks?: GenerateHooks): Promise<GenerateResult> {
     const stream = Boolean(hooks?.onDelta)
     const messages = [
-      { role: 'system', content: req.system },
+      { role: 'system', content: req.system + (req.jsonSchema ? `\n必须返回符合以下 JSON Schema 的 JSON 对象，字段名和嵌套结构必须完全一致：\n${JSON.stringify(req.jsonSchema)}` : '') },
       ...req.turns.map((t) => ({ role: t.role, content: t.content })),
     ]
     const body: Record<string, unknown> = {

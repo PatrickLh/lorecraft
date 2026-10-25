@@ -784,7 +784,8 @@ button, input[type=text] { border-radius: 7px; }
 .actions-toggle { padding: 8px 10px; margin-bottom: 8px; }
 .actions-toggle:hover:not(:disabled) { transform: none; }
 .playing-shell .side-pane.collapsed .actions-toggle { padding: 8px 10px; margin-bottom: 0; }
-.status-values .animated-value, .status-values .animated-value > span { font: inherit; color: inherit; display: inline; }
+.status-values .animated-value { font: inherit; color: inherit; display: inline-block; }
+.status-values strong .rolling-text, .status-values strong .roll-cell, .mobile-status-values strong .rolling-text, .mobile-status-values strong .roll-cell { font: inherit; color: inherit; }
 .animated-value { position: relative; display: inline-block; border-radius: 4px; }
 .animated-value.value-changed { background: #e2e4e2; box-shadow: 0 0 0 3px #e2e4e2; }
 .status-values .animated-value > .value-delta { position: absolute; z-index: 3; bottom: 100%; left: 0; white-space: nowrap; font: 600 12px var(--mono); color: #fff; background: #353938; padding: 2px 5px; border-radius: 5px; animation: delta-rise 1.8s ease-out both; pointer-events: none; }
@@ -850,3 +851,12 @@ button, input[type=text] { border-radius: 7px; }
 .opportunity-list h3 { font-size: 16px; }
 .opportunity-list p { font-size: 14px; }
 .playing-shell .side-pane.collapsed .exploration-toolbar { margin-bottom: 0; }
+.life-grid.daily-layout { grid-template-columns: minmax(0, 1fr); }
+.event-mode-switch { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; margin-top: 12px; }
+.event-mode-switch button { padding: 5px 10px; font-size: 12px; }
+
+.current-daily-scene { border-left: 3px solid #858d82; border-radius: 8px; background: #f4f5f1; padding: 12px 16px; margin-top: 16px; }
+.current-daily-scene h3 { font-size: 18px; margin: 0 0 8px; }
+.current-daily-scene p { white-space: pre-wrap; line-height: 1.9; margin: 0; color: #252b27; }
+.daily-layout .event-mode-switch { margin-top: 5px; }
+@media(max-width:600px) { .daily-layout .event-mode-switch .dim { font-size: 10px; } .daily-layout .event-mode-switch button { padding: 2px 8px; } .current-daily-scene { padding: 10px 12px; } }

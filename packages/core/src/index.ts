@@ -9,3 +9,4 @@ export * from './events.js'
 export * from './inheritance.js'
 
 export * from './characters.js'
+export * from './daily.js'

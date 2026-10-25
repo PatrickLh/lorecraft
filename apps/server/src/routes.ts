@@ -38,6 +38,7 @@ export function createApp(service: GameService): Hono {
     })
   })
 
+  app.get('/api/lives/latest-ended', (c) => c.json({ life: service.getLatestEndedLife() }))
   app.get('/api/lives/:id/opportunities', (c) => c.json({ events: service.opportunities(c.req.param('id')) }))
 
   app.get('/api/lives/:id', (c) => {
@@ -96,6 +97,7 @@ export function createApp(service: GameService): Hono {
   app.post('/api/lives/:id/memory/retry', async (c) =>
     c.json(await service.retryMemory(c.req.param('id')))
   )
+  app.get('/api/lives/:id/memory', (c) => c.json(service.memoryStatus(c.req.param('id'))))
 
   return app
 }

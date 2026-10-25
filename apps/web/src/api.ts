@@ -36,6 +36,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getLatestEndedLife: (): Promise<{ life: LifeState | null }> => req('/api/lives/latest-ended'),
   getOpportunities: (id: string): Promise<{ events: { id: string; title: string; text: string }[] }> => req(`/api/lives/${id}/opportunities`),
   getMeta: (): Promise<MetaInfo> => req<MetaInfo>('/api/meta'),
   getCatalog: (): Promise<WorldCatalog> => req<WorldCatalog>('/api/catalog'),
@@ -63,6 +64,7 @@ export const api = {
     req(`/api/lives/${id}/characters/summarize`, { method: 'POST', body: JSON.stringify({ requestId: crypto.randomUUID(), clientVersion: version }) }),
   retryMemory: (id: string): Promise<{ processed: number; failed: number }> =>
     req(`/api/lives/${id}/memory/retry`, { method: 'POST' }),
+  getMemoryStatus: (id: string): Promise<{ pending: number; failed: number; lastError: string | null }> => req(`/api/lives/${id}/memory`),
   settle: (id: string): Promise<{ life: LifeState }> =>
     req(`/api/lives/${id}/settle`, { method: 'POST' }),
 }
