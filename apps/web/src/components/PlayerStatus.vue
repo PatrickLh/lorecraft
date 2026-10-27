@@ -13,11 +13,11 @@ const hpMax = computed(() => life.value?.injured ? Math.round(life.value.attrs.m
 
 <template>
   <section v-if="life" class="player-status" aria-label="当前人物状态">
-    <div class="mobile-status">
+    <div class="compact-status">
       <div class="mobile-status-heading">
         <strong>{{ locationName(life.locationId) }} · {{ ageOf(life.day) }} 岁</strong>
         <span v-if="life.injured" class="injury-label">重伤</span>
-        <button aria-haspopup="dialog" @click="details?.showModal()">详情</button>
+        <button aria-haspopup="dialog" @click="details?.showModal()">人物</button>
         <button aria-haspopup="dialog" :aria-label="`江湖册：武学 ${life.martials.length}，恩怨 ${journal?.relationCount ?? 0}，人物 ${journal?.peopleCount ?? 0}`" @click="journal?.open('people')">江湖册 <b>{{ journal?.peopleCount ?? 0 }}</b></button>
       </div>
       <p class="mobile-status-date"><RollingText :value="formatDate(life.day, life.slot)" :order="life.day * 4 + life.slot" /></p>
@@ -28,21 +28,13 @@ const hpMax = computed(() => life.value?.injured ? Math.round(life.value.attrs.m
         <div><span>温饱</span><strong><AnimatedValue :value="life.food" /><small>/10</small></strong></div>
       </div>
     </div>
-    <div class="desktop-status">
-    <div class="status-context"><strong><RollingText :value="formatDate(life.day, life.slot)" :order="life.day * 4 + life.slot" /> · {{ ageOf(life.day) }} 岁</strong><span>{{ locationName(life.locationId) }}</span><span v-if="life.sectId">{{ factionName(life.sectId) }}</span><span>身世：{{ destinyName(life.destinyId) }}</span><span v-if="life.injured" class="injury-label">重伤 · 气血上限受损</span></div>
-    <div class="status-values">
-      <div class="vital-value"><span>气血</span><strong><AnimatedValue :value="life.attrs.hp" /><small> / {{ hpMax }}</small></strong><div class="status-meter"><i :style="{ width: Math.min(100, life.attrs.hp / Math.max(1,hpMax) * 100) + '%' }" /></div></div>
-      <div class="vital-value"><span>真气</span><strong><AnimatedValue :value="life.attrs.mp" /><small> / {{ life.attrs.maxMp }}</small></strong><div class="status-meter"><i :style="{ width: Math.min(100, life.attrs.mp / Math.max(1,life.attrs.maxMp) * 100) + '%' }" /></div></div>
-      <div v-for="[label, value] in [['武力',life.attrs.atk],['防御',life.attrs.def],['智力',life.attrs.int],['敏捷',life.attrs.agi],['银两',life.money],['温饱',life.food],['声望',life.rep]]" :key="label" class="numeric-value"><span>{{ label }}</span><strong><AnimatedValue :value="Number(value)" /><small v-if="label === '温饱'"> / 10</small></strong></div>
-      <div class="status-journal"><button @click="journal?.open('martials')">武学 <b>{{ life.martials.length }}</b></button><button @click="journal?.open('relations')">恩怨 <b>{{ journal?.relationCount ?? 0 }}</b></button><button @click="journal?.open('people')">人物图谱 <b>{{ journal?.peopleCount ?? 0 }}</b></button></div>
-    </div>
-    </div>
   </section>
-  <dialog ref="details" class="journal-dialog status-detail-dialog" aria-labelledby="status-detail-title" @click="($event.target === details) && details?.close()">
+  <dialog ref="details" class="journal-dialog side-drawer status-detail-dialog" aria-labelledby="status-detail-title" @click="($event.target === details) && details?.close()">
     <div class="journal-heading"><h2 id="status-detail-title">人物状态</h2><button aria-label="关闭人物状态" @click="details?.close()">关闭 ×</button></div>
     <template v-if="life">
       <p class="dim">身世：{{ destinyName(life.destinyId) }} · 所属：{{ life.sectId ? factionName(life.sectId) : '尚未拜入门派' }}</p>
       <p v-if="life.injured" class="injury-label">重伤：气血上限暂时受损。</p>
+      <div class="detail-journal-links"><button @click="details?.close(); journal?.open('martials')">武学 {{ life.martials.length }}</button><button @click="details?.close(); journal?.open('relations')">恩怨 {{ journal?.relationCount ?? 0 }}</button></div>
       <dl class="status-detail-grid">
         <div v-for="[label,value] in [['气血',`${life.attrs.hp}/${hpMax}`],['真气',`${life.attrs.mp}/${life.attrs.maxMp}`],['武力',life.attrs.atk],['防御',life.attrs.def],['智力',life.attrs.int],['敏捷',life.attrs.agi],['银两',`${life.money} 两`],['温饱',`${life.food}/10`],['声望',life.rep]]" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
       </dl>

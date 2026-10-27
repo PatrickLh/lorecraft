@@ -10,3 +10,4 @@ export * from './inheritance.js'
 
 export * from './characters.js'
 export * from './daily.js'
+export * from './story.js'

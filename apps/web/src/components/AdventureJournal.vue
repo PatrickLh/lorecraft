@@ -51,7 +51,7 @@ defineExpose({ open, peopleCount: computed(() => people.value.length), relationC
 </script>
 
 <template>
-  <dialog ref="dialog" class="journal-dialog" aria-labelledby="journal-title" @click="($event.target === dialog) && dialog?.close()">
+  <dialog ref="dialog" class="journal-dialog side-drawer" aria-labelledby="journal-title" @click="($event.target === dialog) && dialog?.close()">
     <div class="journal-heading"><h2 id="journal-title">此生江湖册</h2><button aria-label="关闭江湖册" @click="dialog?.close()">关闭 ×</button></div>
     <div class="journal-tabs">
       <button v-for="kind in (['martials', 'relations', 'people'] as const)" :key="kind" :aria-pressed="tab === kind" @click="tab = kind; page = 0; selected = ''">

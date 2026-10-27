@@ -860,3 +860,40 @@ button, input[type=text] { border-radius: 7px; }
 .current-daily-scene p { white-space: pre-wrap; line-height: 1.9; margin: 0; color: #252b27; }
 .daily-layout .event-mode-switch { margin-top: 5px; }
 @media(max-width:600px) { .daily-layout .event-mode-switch .dim { font-size: 10px; } .daily-layout .event-mode-switch button { padding: 2px 8px; } .current-daily-scene { padding: 10px 12px; } }
+
+.chapter-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+.chapter-entry button { font-size: 12px; padding: 5px 10px; }
+.chapter-entry small { color: #586354; font-size: 11px; }
+
+/* Keep the reading surface quiet; secondary records live in side drawers. */
+.compact-status { display: flex; align-items: center; gap: 20px; }
+.compact-status .mobile-status-heading { display: flex; align-items: center; gap: 8px; margin: 0; }
+.compact-status .mobile-status-heading > strong { font-size: 14px; white-space: nowrap; }
+.compact-status .mobile-status-heading button { font-size: 12px; padding: 5px 9px; white-space: nowrap; }
+.compact-status .mobile-status-date { margin: 0; font-size: 13px; }
+.compact-status .mobile-status-values { display: flex; margin-left: auto; gap: 20px; }
+.compact-status .mobile-status-values > div { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.compact-status .mobile-status-values > div > span { color: #62685f; font-size: 12px; }
+.compact-status .mobile-status-values strong { font: 600 17px var(--mono); }
+.compact-status .mobile-status-values small { font-size: 11px; font-weight: 400; color: #62685f; }
+.player-status:has(.compact-status) { padding: 10px 14px; margin-bottom: 10px; }
+.detail-journal-links { display: flex; gap: 8px; margin: 18px 0; }
+.side-drawer { position: fixed; inset: 0 0 0 auto; margin: 0; width: min(580px, 100vw); height: 100dvh; max-height: 100dvh; box-sizing: border-box; border-radius: 18px 0 0 18px; border-right: 0; padding: 24px; overscroll-behavior: contain; animation: drawer-enter .18s ease-out; }
+.side-drawer .journal-heading { position: sticky; top: -24px; z-index: 2; background: #fafaf8; padding: 16px 0; margin-top: -16px; border-bottom: 1px solid #daddd6; }
+.side-drawer .journal-heading h2 { font-size: 20px; }
+@keyframes drawer-enter { from { transform: translateX(24px); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+@media(max-width:1100px) { .compact-status { flex-wrap: wrap; gap: 8px 18px; } .compact-status .mobile-status-values { gap: 16px; } }
+@media(max-width:600px) {
+  .player-status:has(.compact-status) { padding: 8px 10px; margin-bottom: 7px; }
+  .compact-status { display: grid; grid-template-columns: 1fr; gap: 5px; }
+  .compact-status .mobile-status-heading > strong { margin-right: auto; font-size: 13px; }
+  .compact-status .mobile-status-date { font-size: 12px; }
+  .compact-status .mobile-status-values { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); width: 100%; margin: 0; gap: 6px; }
+  .compact-status .mobile-status-values > div { display: flex; padding: 0; border: 0; gap: 4px; }
+  .compact-status .mobile-status-values > div > span { font-size: 11px; }
+  .compact-status .mobile-status-values strong { font-size: 14px; }
+  .compact-status .mobile-status-values small { font-size: 10px; }
+  .side-drawer { width: min(580px, 100vw); padding: 18px; border-radius: 14px 0 0 14px; }
+  .side-drawer .journal-heading { top: -18px; }
+}
+@media(prefers-reduced-motion:reduce) { .side-drawer { animation: none; } }

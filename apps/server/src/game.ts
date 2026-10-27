@@ -4,6 +4,7 @@
  */
 import { availableEvents, resolveExplorationInput } from './exploration.js'
 import { settleDailyChoice } from './daily.js'
+import { beginChapter, chapterChoice, chapterTalk, chapterTravel, chapterView, updateChapterWorld } from './chapter.js'
 import type Database from 'better-sqlite3'
 import {
   advanceTime,
@@ -79,6 +80,12 @@ export interface TurnHooks {
 }
 
 export type ActRequest =
+  | { kind: 'story_begin' }
+  | { kind: 'story_choice'; eventId: string; choiceId: string }
+  | { kind: 'story_travel'; locationId: string }
+  | { kind: 'story_talk'; npcId: string; topic: 'past' | 'rumor' | 'interest' }
+  | { kind: 'story_routine'; activity: 'work' | 'meal' | 'rest' | 'train' | 'study' | 'wait' }
+  | { kind: 'story_detail' }
   | { kind: 'daily_prepare'; retry?: boolean }
   | { kind: 'daily_choose'; planId: string; slot: number; index: number }
   | { kind: 'action'; actionId: string }
@@ -228,7 +235,7 @@ export class GameService {
 
   // ---- 一世生命周期 ----
 
-  createLife(originId: string): { life: LifeState; meta: MetaState } {
+  createLife(originId: string, storyMode = false): { life: LifeState; meta: MetaState } {
     const origin = getOrigin(originId)
     if (!origin) throw new HttpError(404, 'origin_not_found', `出身不存在：${originId}`)
     const tx = this.dbTransaction(() => {
@@ -242,6 +249,7 @@ export class GameService {
       }
       const destiny = origin.destiny ?? DESTINIES[Math.floor(this.rng() * DESTINIES.length)]?.id ?? null
       const life = createLife(this.genId(), { ...origin, destiny }, this.now())
+      if (storyMode) pushHistoryEntry(life, 'system', '玄灯旧案·启程', beginChapter(life))
       this.repos.insertLife(life, this.now())
       this.repos.insertEvent(
         life.id,
@@ -319,6 +327,8 @@ export class GameService {
     return availableEvents(this.getLife(lifeId)).map(event => ({ id: event.id, title: event.title, text: event.text }))
   }
 
+  getStory(lifeId: string) { return chapterView(this.getLife(lifeId)) }
+
   // ---- 行动 ----
 
   async submitAct(
@@ -364,6 +374,11 @@ export class GameService {
 
     const originalInput = act.kind === 'free' ? act.input.trim() : null
     if (originalInput) act = resolveExplorationInput(originalInput, lifeRow.data.locationId) ?? act
+    const chapterAction = act.kind.startsWith('story_')
+    if (lifeRow.data.story && !chapterAction && !['action', 'ending', 'event_choice'].includes(act.kind)) {
+      this.repos.releaseRequest(lifeId, requestId)
+      throw new HttpError(409, 'chapter_mode', '当前正在章节中，请通过目标、地图与人物进行行动')
+    }
     const meta = this.ensureMeta()
     const discount = reqDiscountForLives(meta.livesCount)
 
@@ -381,7 +396,40 @@ export class GameService {
     let playerInput = ''
 
     try {
-      if (act.kind === 'daily_prepare') {
+      if (act.kind === 'story_begin') {
+        narrative = beginChapter(working)
+        historyLabel = '进入玄灯旧案'
+        historyKind = 'system'
+      } else if (act.kind === 'story_choice' || act.kind === 'story_travel' || act.kind === 'story_talk') {
+        const result = act.kind === 'story_choice' ? chapterChoice(working, act.eventId, act.choiceId, this.rng) : act.kind === 'story_travel' ? chapterTravel(working, act.locationId) : chapterTalk(working, act.npcId, act.topic)
+        working = result.life; facts = result.facts; narrative = result.narrative; historyLabel = result.label; playerInput = result.playerInput
+        historyKind = act.kind === 'story_choice' ? 'event' : 'action'
+      } else if (act.kind === 'story_routine') {
+        if (!working.story) throw new HttpError(409, 'no_chapter', '请先进入章节')
+        const activities = {
+          work: { id: 'story_work', label: '当地帮工', desc: '', slots: 1, moneyGain: [2, 3] as [number, number], foodGain: 3 },
+          meal: ACTIONS.find(a => a.id === 'yongfan')!,
+          rest: { id: 'story_rest', label: '歇息调养', desc: '', slots: 1, hpGain: 3, mpGain: 2 },
+          train: ACTIONS.find(a => a.id === 'lianwu')!,
+          study: ACTIONS.find(a => a.id === 'dushu')!,
+          wait: { id: 'story_wait', label: '等候一个时辰', desc: '', slots: 1 },
+        }
+        const selected = Object.hasOwn(activities, act.activity) ? activities[act.activity] : undefined
+        if (!selected) throw new HttpError(400, 'bad_action', '此行动不存在')
+        const result = applyFixedAction(working, selected, MARTIAL_DEFS, this.rng)
+        if (result.invalid) throw new HttpError(400, 'invalid_action', result.invalid)
+        working = result.life; facts = result.facts
+        if (result.diedOfStarve) markLifeEnd(working, 'death', { deathCause: 'starve' })
+        else if (result.goodDeath) markLifeEnd(working, 'ending', { endingId: 'shan_zhong' })
+        facts.push(...updateChapterWorld(working))
+        historyLabel = selected.label; playerInput = selected.label
+        narrative = [act.activity === 'work' ? '你接下当地的杂役，做完后领了工钱与饭食。' : act.activity === 'wait' ? '你留在原地等候。自己的脚步停下，江湖里的事仍按日程发生。' : `你在当前地点${selected.label}。`, ...facts].join('\n\n')
+        working.story!.lastScene = narrative
+      } else if (act.kind === 'story_detail') {
+        if (!working.story) throw new HttpError(409, 'no_chapter', '请先进入章节')
+        historyLabel = '旧案·场景细读'
+        facts = ['仅演绎以下已经发生的事实；不增加证据、不推进时间、不改变人物身份与任务进度：', working.story.lastScene]
+      } else if (act.kind === 'daily_prepare') {
         if (working.dailyPlan?.day === working.day && working.dailyPlan.startSlot <= working.slot && !(act.retry && working.dailyPlan.source === 'fallback' && working.slot === working.dailyPlan.startSlot && working.dailyPlan.selectedRoute === null)) {
           throw new HttpError(409, 'daily_exists', '今日事件已准备好，请继续选择或刷新同步')
         }
@@ -423,6 +471,8 @@ export class GameService {
       } else if (act.kind === 'action') {
         const action = ACTIONS.find((a) => a.id === act.actionId)
         if (!action) throw new HttpError(404, 'action_not_found', `行动不存在：${act.actionId}`)
+        const venue = ({ zuogong: 'matou', biaoju_banggong: 'biaoju', fangshi: 'fangshi' } as Record<string, string>)[action.id]
+        if (working.story && venue && working.locationId !== venue) throw new HttpError(400, 'wrong_location', '请先通过地图前往相应地点')
         historyLabel = action.label
         playerInput = originalInput ?? action.label
         if (action.id === 'zuogong') working.locationId = 'matou'
@@ -437,7 +487,7 @@ export class GameService {
         facts = res.facts
         if (res.diedOfStarve) markLifeEnd(working, 'death', { deathCause: 'starve' })
         else if (res.goodDeath) markLifeEnd(working, 'ending', { endingId: 'shan_zhong' })
-        if (working.phase === 'alive' && res.eventRoll) {
+        if (working.phase === 'alive' && res.eventRoll && !working.story) {
           const ev = pickEvent(working, EVENTS, this.rng)
           if (ev) {
             working.pendingEventId = ev.id
@@ -523,8 +573,9 @@ export class GameService {
       }
 
       // ---- LLM 行动演绎（事务外） ----
+      if (working.story) facts.push(...updateChapterWorld(working))
       if (act.kind !== 'daily_prepare' && act.kind !== 'daily_choose') working.dailyPlan = null
-      if (working.phase === 'alive' && act.kind !== 'daily_prepare' && act.kind !== 'daily_choose') {
+      if (working.phase === 'alive' && act.kind !== 'daily_prepare' && act.kind !== 'daily_choose' && (!working.story || act.kind === 'story_detail')) {
         const attempt = await runActAttempt({
           provider: this.provider,
           life: working,
@@ -546,7 +597,7 @@ export class GameService {
         this.logUsage('act', attempt.usage, lifeId)
         if (attempt.kind === 'ok') {
           narrative = attempt.value.narrative
-          rememberCharacters(working, attempt.value.characters ?? [], narrative)
+          if (!working.story) rememberCharacters(working, attempt.value.characters ?? [], narrative)
           suggestions = attempt.value.suggestedActions ?? []
           if (attempt.value.growth && act.kind === 'free') {
             applyGrow(working, attempt.value.growth.key as GrowKey, 1, 'llm', MARTIAL_DEFS)
@@ -555,7 +606,7 @@ export class GameService {
         } else {
           degraded = true
           degradedReason = attempt.reason
-          narrative = act.kind === 'free' ? DEGRADED_NARRATIVE : facts.join('；') || DEGRADED_NARRATIVE
+          narrative = working.story?.lastScene ?? (act.kind === 'free' ? DEGRADED_NARRATIVE : facts.join('；') || DEGRADED_NARRATIVE)
         }
       }
 
@@ -588,7 +639,7 @@ export class GameService {
         playerInput,
         battleStarted,
         endInfo,
-        skipSummary: act.kind === 'daily_prepare' || act.kind === 'daily_choose',
+        skipSummary: !!working.story || act.kind === 'daily_prepare' || act.kind === 'daily_choose',
       })
     } catch (e) {
       this.repos.releaseRequest(lifeId, requestId)

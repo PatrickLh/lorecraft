@@ -128,6 +128,7 @@ export interface CharacterNote {
 }
 
 export interface LifeState {
+  story?: import('./story.js').ChapterState | null
   dailyPlan?: import('./daily.js').DailyPlan | null
   storyThreads?: { day: number; text: string }[]
   characterNotes?: Record<string, CharacterNote>

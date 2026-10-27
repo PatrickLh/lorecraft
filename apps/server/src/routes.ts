@@ -25,7 +25,7 @@ export function createApp(service: GameService): Hono {
   app.post('/api/lives', async (c) => {
     const body = await parseBody<{ originId?: string }>(c)
     if (!body.originId) throw new HttpError(400, 'missing_origin', '缺少 originId')
-    return c.json(service.createLife(body.originId), 201)
+    return c.json(service.createLife(body.originId, true), 201)
   })
 
   app.get('/api/lives/active', (c) => {
@@ -40,6 +40,7 @@ export function createApp(service: GameService): Hono {
 
   app.get('/api/lives/latest-ended', (c) => c.json({ life: service.getLatestEndedLife() }))
   app.get('/api/lives/:id/opportunities', (c) => c.json({ events: service.opportunities(c.req.param('id')) }))
+  app.get('/api/lives/:id/story', (c) => c.json(service.getStory(c.req.param('id'))))
 
   app.get('/api/lives/:id', (c) => {
     const life = service.getLife(c.req.param('id'))

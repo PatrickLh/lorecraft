@@ -28,6 +28,7 @@ export { ENEMIES } from './content/enemies.js'
 export { ORIGINS, DESTINIES } from './content/origins.js'
 export { ENDINGS, DEATH_ENDINGS } from './content/endings.js'
 export { EVENTS } from './content/events.js'
+export * from './content/chapter.js'
 
 export const MARTIAL_DEFS: Map<string, MartialDef> = new Map(MARTIALS.map((m) => [m.id, m]))
 export const ENEMY_DEFS: Map<string, Enemy> = new Map(ENEMIES.map((e) => [e.id, e]))

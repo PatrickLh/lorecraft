@@ -9,6 +9,7 @@ import type {
   MetaInfo,
   WorldCatalog,
 } from './types.js'
+import type { StoryView } from '@lorecraft/core'
 
 export class ApiError extends Error {
   constructor(
@@ -36,6 +37,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getStory: (id: string): Promise<StoryView> => req(`/api/lives/${id}/story`),
   getLatestEndedLife: (): Promise<{ life: LifeState | null }> => req('/api/lives/latest-ended'),
   getOpportunities: (id: string): Promise<{ events: { id: string; title: string; text: string }[] }> => req(`/api/lives/${id}/opportunities`),
   getMeta: (): Promise<MetaInfo> => req<MetaInfo>('/api/meta'),

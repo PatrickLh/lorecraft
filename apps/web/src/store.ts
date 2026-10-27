@@ -1,5 +1,6 @@
 /** v2.0 全局响应式状态（plan P4）：刷新恢复、状态机、服务端快照权威、自动滚屏数据源。 */
 import { reactive } from 'vue'
+import type { StoryView } from '@lorecraft/core'
 import { ApiError, api, actPath, battlePath, streamCall } from './api.js'
 import type {
   ActResponse,
@@ -21,6 +22,9 @@ export interface LogEntry {
 }
 
 interface AppState {
+  storyView: StoryView | null
+  storyFocus: string | null
+  storyError: string | null
   archivedLife: LifeState | null
   booted: boolean
   loading: boolean
@@ -43,6 +47,9 @@ interface AppState {
 }
 
 export const state = reactive<AppState>({
+  storyView: null,
+  storyFocus: null,
+  storyError: null,
   archivedLife: null,
   booted: false,
   loading: false,
@@ -111,6 +118,7 @@ export async function boot(): Promise<void> {
     state.battle = life?.pendingBattle ?? null
     state.pendingEvent = active.event
     state.availableEndings = active.availableEndings
+    await refreshStoryView()
     state.booted = true
   } catch (e) {
     state.error = e instanceof Error ? e.message : String(e)
@@ -137,12 +145,26 @@ async function refreshMetaInfo(): Promise<void> {
   state.metaInfo = await api.getMeta()
 }
 
+export async function refreshStoryView(): Promise<void> {
+  const life = state.life
+  if (!life) { state.storyView = null; state.storyFocus = null; return }
+  const version = life.version
+  try {
+    const view = await api.getStory(life.id)
+    if (state.life?.id !== life.id || state.life.version !== version) return
+    state.storyView = view
+    state.storyError = null
+    if (!view.events.some(e => e.id === state.storyFocus && e.status === 'ready')) state.storyFocus = null
+  } catch { state.storyError = '暂时无法读取章节目标，请重试。' }
+}
+
 export async function startLife(originId: string): Promise<void> {
   state.loading = true
   try {
     const life = await api.createLife(originId)
     state.life = life
     state.log = []
+    state.storyView = null
     state.notices = []
     state.endInfo = null
     state.battle = null
@@ -150,10 +172,13 @@ export async function startLife(originId: string): Promise<void> {
     state.suggestions = []
     state.availableEndings = []
     state.ui = 'idle'
+    state.storyFocus = null
     const origin = state.catalog?.origins.find((o) => o.id === originId)
     pushLog('system', `—— 新的一生 · ${origin?.name ?? originId} ——`)
     pushLog('narrative', `${origin?.desc ?? ''}\n你十六岁，孤身一人，落在了钱塘城。`)
+    if (life.story) restoreHistory(life)
     await refreshMetaInfo()
+    await refreshStoryView()
   } catch (e) {
     notice(e instanceof ApiError ? e.message : String(e), true)
   } finally {
@@ -181,6 +206,7 @@ async function handleActResult(result: ActResponse): Promise<void> {
     notice(`战斗开始：${result.battleStarted.enemyName}${result.battleStarted.lethal ? '（此人下死手！）' : ''}`, result.battleStarted.lethal)
   }
   state.pendingEvent = result.event
+  await refreshStoryView()
   if (result.ended) await applyEnd(result.endInfo, result.life)
 }
 
@@ -210,7 +236,7 @@ export async function submitAct(act: Record<string, unknown>, label: string): Pr
     await handleActResult(result)
   } catch (e) {
     pendingEntry.pending = false
-    if (e instanceof ApiError && (e.code === 'version_conflict' || e.code === 'daily_stale' || e.code === 'daily_exists' || e.code === 'network' || e.code === 'stream_truncated')) {
+    if (e instanceof ApiError && (e.code === 'version_conflict' || e.code === 'story_unavailable' || e.code === 'daily_stale' || e.code === 'daily_exists' || e.code === 'network' || e.code === 'stream_truncated')) {
       state.ui = 'connection_lost'
       notice('与服务器的连接/状态不同步，正在恢复……', true)
       await resync()
@@ -274,6 +300,7 @@ export async function resync(): Promise<boolean> {
     state.battle = active.life?.pendingBattle ?? null
     state.pendingEvent = active.event
     await refreshMetaInfo()
+    await refreshStoryView()
     state.ui = 'idle'
     return true
   } catch {
@@ -318,7 +345,7 @@ export function martialName(id: string): string {
 }
 
 export function locationName(id: string): string {
-  return state.catalog?.locations.find((l) => l.id === id)?.name ?? id
+  return (state.life?.story ? state.storyView?.locations.find(l => l.id === id)?.name : null) ?? state.catalog?.locations.find((l) => l.id === id)?.name ?? id
 }
 
 export function originName(id: string): string {

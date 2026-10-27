@@ -1,8 +1,10 @@
 import type { ActionDef, FactionDef, LocationDef, NpcDef } from '../types.js'
+import { CHAPTER_LOCATIONS, CHAPTER_NPCS } from './chapter.js'
 
 /** 钱塘城：江南水乡的市井江湖（单城 MVP，requirement §8）。 */
 
 export const LOCATIONS: LocationDef[] = [
+  ...CHAPTER_LOCATIONS.filter(l => !['fangshi', 'biaoju', 'matou', 'pomin', 'yamen', 'yelin'].includes(l.id)).map(l => ({ id: l.id, name: l.name, desc: l.desc })),
   { id: 'biaoju', name: '镖局', desc: '镖师练武、杂役挑水劈柴的院落。帮工可领工钱，饭堂供饭。' },
   { id: 'fangshi', name: '坊市', desc: '钱塘城最热闹的地界，酒楼茶肆当铺药铺挤作一处，三教九流都在这里讨生活。' },
   { id: 'matou', name: '码头', desc: '漕船如织，号子震天。脚夫扛包，帮众闲逛，是力气换钱的地方，也是是非之地。' },
@@ -19,6 +21,7 @@ export const FACTIONS: FactionDef[] = [
 ]
 
 export const NPCS: NpcDef[] = [
+  ...CHAPTER_NPCS.filter(n => !['shen_tiexiao', 'lu_zhanpeng', 'bai_lu', 'liu_wenyuan', 'tie_butou', 'lao_qigai', 'sun_zhanggui', 'qin_yueniang', 'he_yidao', 'wang_po', 'xuanzhen'].includes(n.id)).map(n => ({ id: n.id, name: n.name, faction: n.faction, role: n.role, desc: n.background })),
   { id: 'shen_tiexiao', name: '沈铁箫', faction: 'tiejianmen', role: '铁剑门掌门', desc: '五十许人，鬓角霜白，一柄未开锋的长剑从不离身。话少，看人极准。', martialHint: '惊鸿剑法' },
   { id: 'lu_zhanpeng', name: '陆展鹏', faction: 'caobang', role: '漕帮堂主', desc: '络腮胡大汉，笑声洪亮，讲义气也记仇。码头上的事，他说了算。', martialHint: '排云掌' },
   { id: 'zhao_heng', name: '赵横', faction: null, role: '坊市恶霸', desc: '横行坊市的地痞头子，收摊税收保护费，拳头硬，心眼小。', martialHint: '铁砂掌' },
